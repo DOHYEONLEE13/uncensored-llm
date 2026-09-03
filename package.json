@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server/index.ts --dev",
-    "build": "tsc -b && vite build && tsc -p tsconfig.server.json",
-    "typecheck": "tsc -b && tsc -p tsconfig.server.json --noEmit",
+    "build": "tsc -b && tsc -p tsconfig.functions.json && vite build && tsc -p tsconfig.server.json",
+    "typecheck": "tsc -b && tsc -p tsconfig.functions.json && tsc -p tsconfig.server.json --noEmit",
     "preview": "node dist-server/index.js",
     "start": "node dist-server/index.js"
   },

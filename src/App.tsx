@@ -297,7 +297,43 @@ export default function App() {
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const [isThinking, setIsThinking] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const messagesViewportRef = useRef<HTMLDivElement>(null)
+  const stickToBottomRef = useRef(true)
   const requestControllerRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    const viewport = window.visualViewport
+    let animationFrame = 0
+
+    const updateViewport = () => {
+      window.cancelAnimationFrame(animationFrame)
+      animationFrame = window.requestAnimationFrame(() => {
+        const height = viewport?.height ?? window.innerHeight
+        const offsetTop = viewport?.offsetTop ?? 0
+        document.documentElement.style.setProperty('--mira-viewport-height', `${height}px`)
+        document.documentElement.style.setProperty('--mira-viewport-top', `${offsetTop}px`)
+
+        if (document.activeElement === textareaRef.current) {
+          const messagesViewport = messagesViewportRef.current
+          if (messagesViewport) messagesViewport.scrollTop = messagesViewport.scrollHeight
+        }
+      })
+    }
+
+    updateViewport()
+    window.addEventListener('resize', updateViewport)
+    viewport?.addEventListener('resize', updateViewport)
+    viewport?.addEventListener('scroll', updateViewport)
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame)
+      window.removeEventListener('resize', updateViewport)
+      viewport?.removeEventListener('resize', updateViewport)
+      viewport?.removeEventListener('scroll', updateViewport)
+      document.documentElement.style.removeProperty('--mira-viewport-height')
+      document.documentElement.style.removeProperty('--mira-viewport-top')
+    }
+  }, [])
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -319,6 +355,17 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem(SELECTED_MODEL_STORAGE_KEY, modelName)
   }, [modelName])
+
+  useEffect(() => {
+    if (!workspaceOpen || !stickToBottomRef.current) return
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      const messagesViewport = messagesViewportRef.current
+      if (messagesViewport) messagesViewport.scrollTop = messagesViewport.scrollHeight
+    })
+
+    return () => window.cancelAnimationFrame(animationFrame)
+  }, [isThinking, messages, workspaceOpen])
 
   useEffect(() => {
     if (!activeConversationId || messages.length === 0) return
@@ -366,6 +413,7 @@ export default function App() {
     setMessages([])
     setDraft('')
     setIsThinking(false)
+    stickToBottomRef.current = true
     setSidebarOpen(false)
     window.setTimeout(() => textareaRef.current?.focus(), 0)
   }
@@ -380,6 +428,7 @@ export default function App() {
     setMessages(conversation.messages)
     setDraft('')
     setIsThinking(false)
+    stickToBottomRef.current = true
     setSidebarOpen(false)
     setWorkspaceOpen(true)
   }
@@ -412,6 +461,7 @@ export default function App() {
     const conversationId = activeConversationId ?? crypto.randomUUID()
 
     if (!activeConversationId) setActiveConversationId(conversationId)
+    stickToBottomRef.current = true
     setMessages(requestMessages)
     setDraft('')
     setIsThinking(true)
@@ -523,7 +573,7 @@ export default function App() {
   }
 
   return (
-    <main className="app-background relative h-[100dvh] min-h-[620px] overflow-hidden p-2.5 text-white md:p-4">
+    <main className="app-viewport app-background overflow-hidden p-2.5 text-white md:p-4">
       <div className="background-wash absolute inset-0" />
       <div className="background-grain absolute inset-0 opacity-20" />
 
@@ -693,7 +743,16 @@ export default function App() {
                 </button>
               </header>
 
-              <div className="relative min-h-0 flex-1 overflow-y-auto px-3 md:px-6">
+              <div
+                ref={messagesViewportRef}
+                onScroll={(event) => {
+                  const viewport = event.currentTarget
+                  const distanceFromBottom =
+                    viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+                  stickToBottomRef.current = distanceFromBottom < 80
+                }}
+                className="relative min-h-0 flex-1 overscroll-contain overflow-y-auto px-3 md:px-6"
+              >
                 <div className={`flex min-h-full ${messages.length === 0 ? 'items-center pb-[4vh]' : 'items-start'}`}>
                   {messages.length === 0 ? (
                     <EmptyState />
@@ -723,10 +782,11 @@ export default function App() {
               }}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={handleComposerKeyDown}
+              enterKeyHint="send"
               rows={1}
               aria-label="MIRA에게 메시지 보내기"
               placeholder="MIRA에게 무엇이든 물어보세요"
-              className="max-h-36 min-h-12 w-full resize-none bg-transparent px-3 py-3 text-[13px] leading-6 text-white/90 outline-none placeholder:text-white/38 md:text-sm"
+              className="max-h-36 min-h-12 w-full resize-none bg-transparent px-3 py-3 text-[16px] leading-6 text-white/90 outline-none placeholder:text-white/38 md:text-sm"
             />
             <div className="flex items-center justify-end px-1 pb-1">
               <button

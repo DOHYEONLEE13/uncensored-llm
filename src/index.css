@@ -24,12 +24,23 @@ body,
 #root {
   margin: 0;
   min-width: 320px;
+  height: 100%;
   min-height: 100%;
 }
 
 body {
   min-height: 100vh;
   overflow: hidden;
+  overscroll-behavior: none;
+}
+
+.app-viewport {
+  position: fixed;
+  top: var(--mira-viewport-top, 0px);
+  right: 0;
+  left: 0;
+  height: var(--mira-viewport-height, 100dvh);
+  min-height: 0;
 }
 
 button,
@@ -204,7 +215,14 @@ button {
     backdrop-filter: blur(16px) saturate(120%);
     -webkit-backdrop-filter: blur(16px) saturate(120%);
   }
+}
 
+@media (min-width: 768px) {
+  .app-viewport {
+    top: 0;
+    height: 100dvh;
+    min-height: 620px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
