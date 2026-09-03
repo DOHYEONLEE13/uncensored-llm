@@ -34,7 +34,12 @@ type ConnectionStatus = 'success' | 'failure'
 
 const CONVERSATIONS_STORAGE_KEY = 'mira-conversations'
 const SELECTED_MODEL_STORAGE_KEY = 'mira-selected-model'
-const FALLBACK_MODELS = ['obsidian/Qwen3.8-27B', 'qwen/qwen3.8-27b-free']
+const FALLBACK_MODELS = [
+  'obsidian/Qwen3.8-27B',
+  'qwen/qwen3.8-27b-free',
+  'openrouter/free',
+  'cognitivecomputations/dolphin-mistral-24b-venice-edition',
+]
 const MarkdownResponse = lazy(() => import('./MarkdownResponse'))
 
 function loadConversations(): Conversation[] {
@@ -743,7 +748,27 @@ export default function App() {
         if (!data) return
 
         const streamEvent = JSON.parse(data) as {
-          choices?: Array<{ delta?: { content?: string } }>
+          error?:
+            | string
+            | {
+                code?: number | string
+                message?: string
+                type?: string
+              }
+          choices?: Array<{
+            delta?: { content?: string }
+            finish_reason?: string | null
+          }>
+        }
+        if (streamEvent.error) {
+          const errorMessage =
+            typeof streamEvent.error === 'string'
+              ? streamEvent.error
+              : streamEvent.error.message ?? '스트리밍 응답 중 오류가 발생했습니다.'
+          throw new Error(errorMessage)
+        }
+        if (streamEvent.choices?.[0]?.finish_reason === 'error') {
+          throw new Error('스트리밍 응답 중 오류가 발생했습니다.')
         }
         const contentDelta = streamEvent.choices?.[0]?.delta?.content
         if (typeof contentDelta === 'string' && contentDelta) appendAssistantContent(contentDelta)

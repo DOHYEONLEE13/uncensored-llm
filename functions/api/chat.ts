@@ -1,32 +1,66 @@
-type OrcaMessage = {
+type ChatMessage = {
   role: 'user' | 'assistant'
   content: string
 }
 
-type OrcaRouterEnv = {
+type ProviderId = 'orcarouter' | 'openrouter'
+
+type AiEnv = {
   ORCAROUTER_API_KEY?: string
+  OPENROUTER_API_KEY?: string
 }
 
 type PagesContext = {
   request: Request
-  env: OrcaRouterEnv
+  env: AiEnv
 }
 
-type OrcaRouterErrorBody = {
+type UpstreamErrorBody = {
   error?:
     | string
     | {
-        code?: string
+        code?: number | string
         message?: string
         type?: string
       }
   message?: string
 }
 
-const ORCAROUTER_CHAT_URL = 'https://api.orcarouter.ai/v1/chat/completions'
+type ProviderConfig = {
+  id: ProviderId
+  name: string
+  chatUrl: string
+  envKey: keyof AiEnv
+  placeholder: string
+}
+
 const ORCAROUTER_MODELS = ['obsidian/Qwen3.8-27B', 'qwen/qwen3.8-27b-free'] as const
+const OPENROUTER_MODELS = [
+  'openrouter/free',
+  'cognitivecomputations/dolphin-mistral-24b-venice-edition',
+] as const
+const AI_MODELS = [...ORCAROUTER_MODELS, ...OPENROUTER_MODELS] as const
 const DEFAULT_MODEL = ORCAROUTER_MODELS[0]
 const MAX_REQUEST_BYTES = 1_000_000
+
+type AiModel = (typeof AI_MODELS)[number]
+
+const PROVIDERS: Record<ProviderId, ProviderConfig> = {
+  orcarouter: {
+    id: 'orcarouter',
+    name: 'OrcaRouter',
+    chatUrl: 'https://api.orcarouter.ai/v1/chat/completions',
+    envKey: 'ORCAROUTER_API_KEY',
+    placeholder: '여기에_내_OrcaRouter_API_Key',
+  },
+  openrouter: {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    chatUrl: 'https://openrouter.ai/api/v1/chat/completions',
+    envKey: 'OPENROUTER_API_KEY',
+    placeholder: '여기에_내_OpenRouter_API_Key',
+  },
+}
 
 function json(body: unknown, status = 200) {
   return Response.json(body, {
@@ -37,12 +71,21 @@ function json(body: unknown, status = 200) {
   })
 }
 
-function isConfigured(apiKey: string | undefined) {
-  const normalized = apiKey?.trim()
-  return Boolean(normalized && normalized !== '여기에_내_OrcaRouter_API_Key')
+function isAiModel(value: string): value is AiModel {
+  return AI_MODELS.some((model) => model === value)
 }
 
-function isValidMessages(value: unknown): value is OrcaMessage[] {
+function getProviderForModel(model: AiModel) {
+  const isOpenRouterModel = OPENROUTER_MODELS.some((candidate) => candidate === model)
+  return PROVIDERS[isOpenRouterModel ? 'openrouter' : 'orcarouter']
+}
+
+function getProviderApiKey(env: AiEnv, provider: ProviderConfig) {
+  const apiKey = env[provider.envKey]?.trim()
+  return apiKey && apiKey !== provider.placeholder ? apiKey : undefined
+}
+
+function isValidMessages(value: unknown): value is ChatMessage[] {
   return (
     Array.isArray(value) &&
     value.length > 0 &&
@@ -58,13 +101,9 @@ function isValidMessages(value: unknown): value is OrcaMessage[] {
   )
 }
 
-function isAllowedModel(value: string): value is (typeof ORCAROUTER_MODELS)[number] {
-  return ORCAROUTER_MODELS.some((model) => model === value)
-}
-
-function parseUpstreamError(text: string) {
+function parseUpstreamError(text: string, provider: ProviderConfig) {
   try {
-    const parsed = JSON.parse(text) as OrcaRouterErrorBody
+    const parsed = JSON.parse(text) as UpstreamErrorBody
     const error = parsed.error
     if (typeof error === 'string') return { message: error }
     if (error && typeof error === 'object') {
@@ -76,24 +115,13 @@ function parseUpstreamError(text: string) {
     }
     return { message: parsed.message ?? text }
   } catch {
-    return { message: text || 'OrcaRouter 응답을 가져오지 못했습니다.' }
+    return { message: text || `${provider.name} 응답을 가져오지 못했습니다.` }
   }
 }
 
 export async function onRequest({ request, env }: PagesContext) {
   if (request.method !== 'POST') {
     return json({ error: 'Method not allowed' }, 405)
-  }
-
-  const apiKey = env.ORCAROUTER_API_KEY?.trim()
-  if (!isConfigured(apiKey)) {
-    return json(
-      {
-        error: 'ORCAROUTER_API_KEY가 Cloudflare Pages Secret에 설정되지 않았습니다.',
-        type: 'configuration_error',
-      },
-      500,
-    )
   }
 
   const contentLength = Number(request.headers.get('content-length') ?? 0)
@@ -123,12 +151,25 @@ export async function onRequest({ request, env }: PagesContext) {
     typeof payload.model === 'string'
       ? payload.model
       : DEFAULT_MODEL
-  if (!isAllowedModel(requestedModel)) {
+  if (!isAiModel(requestedModel)) {
     return json({ error: '허용되지 않은 모델입니다.', type: 'invalid_model' }, 400)
   }
 
+  const provider = getProviderForModel(requestedModel)
+  const apiKey = getProviderApiKey(env, provider)
+  if (!apiKey) {
+    return json(
+      {
+        error: `${provider.envKey}가 Cloudflare Pages Secret에 설정되지 않았습니다.`,
+        type: 'configuration_error',
+        provider: provider.id,
+      },
+      500,
+    )
+  }
+
   try {
-    const upstream = await fetch(ORCAROUTER_CHAT_URL, {
+    const upstream = await fetch(provider.chatUrl, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -144,29 +185,41 @@ export async function onRequest({ request, env }: PagesContext) {
     })
 
     if (!upstream.ok) {
-      const error = parseUpstreamError(await upstream.text())
+      const error = parseUpstreamError(await upstream.text(), provider)
       return json(
         {
           error: error.message,
           type: error.type,
           code: error.code,
           status: upstream.status,
+          provider: provider.id,
         },
         upstream.status,
       )
     }
 
     if (!upstream.body) {
-      return json({ error: 'OrcaRouter가 빈 응답을 반환했습니다.', type: 'empty_response' }, 502)
+      return json(
+        {
+          error: `${provider.name}가 빈 응답을 반환했습니다.`,
+          type: 'empty_response',
+          provider: provider.id,
+        },
+        502,
+      )
     }
+
+    const headers: Record<string, string> = {
+      'Content-Type': upstream.headers.get('content-type') ?? 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+    }
+    const generationId = upstream.headers.get('x-generation-id')
+    if (generationId) headers['X-Generation-Id'] = generationId
 
     return new Response(upstream.body, {
       status: 200,
-      headers: {
-        'Content-Type': upstream.headers.get('content-type') ?? 'text/event-stream; charset=utf-8',
-        'Cache-Control': 'no-cache, no-transform',
-        'X-Accel-Buffering': 'no',
-      },
+      headers,
     })
   } catch (error) {
     if (request.signal.aborted) {
@@ -175,8 +228,9 @@ export async function onRequest({ request, env }: PagesContext) {
 
     return json(
       {
-        error: error instanceof Error ? error.message : 'OrcaRouter 연결에 실패했습니다.',
+        error: error instanceof Error ? error.message : `${provider.name} 연결에 실패했습니다.`,
         type: 'upstream_connection_error',
+        provider: provider.id,
       },
       502,
     )
