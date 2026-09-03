@@ -7,6 +7,10 @@
 }
 
 :root {
+  --mira-composer-gap: 10px;
+  --mira-composer-gap: max(10px, env(safe-area-inset-bottom));
+  --mira-composer-reserve: calc(112px + var(--mira-composer-gap));
+  --mira-mobile-sidebar-bottom: calc(122px + var(--mira-composer-gap));
   color: #fffaf0;
   background: #244c56;
   font-family: var(--font-sans);
@@ -36,11 +40,14 @@ body {
 
 .app-viewport {
   position: fixed;
-  top: var(--mira-viewport-top, 0px);
+  z-index: 1;
+  top: 0;
   right: 0;
   left: 0;
   height: var(--mira-viewport-height, 100dvh);
   min-height: 0;
+  transform: translate3d(0, var(--mira-viewport-offset, 0px), 0);
+  will-change: height, transform;
 }
 
 button,
@@ -52,15 +59,27 @@ button {
   cursor: pointer;
 }
 
-.app-background {
+.app-scene-background {
+  position: fixed;
+  z-index: 0;
+  top: 0;
+  right: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100lvh;
+  overflow: hidden;
   background-image: url('/mira-background.jpg');
   background-position: center 49%;
   background-size: cover;
   isolation: isolate;
+  pointer-events: none;
+  transform: translateZ(0);
 }
 
-.app-background::before {
+.app-scene-background::before {
   position: absolute;
+  z-index: 1;
   inset: 0;
   content: '';
   background:
@@ -69,14 +88,14 @@ button {
 }
 
 .background-wash {
-  z-index: -1;
+  z-index: 2;
   background:
     linear-gradient(180deg, rgba(9, 31, 38, 0.08), rgba(7, 24, 30, 0.3)),
     radial-gradient(circle at 50% 48%, transparent 0 15%, rgba(7, 27, 34, 0.08) 54%, rgba(4, 17, 22, 0.34) 100%);
 }
 
 .background-grain {
-  z-index: -1;
+  z-index: 3;
   pointer-events: none;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.18'/%3E%3C/svg%3E");
   mix-blend-mode: soft-light;
@@ -118,6 +137,18 @@ button {
   -webkit-backdrop-filter: blur(28px) saturate(145%);
 }
 
+.composer-dock {
+  bottom: var(--mira-composer-gap);
+}
+
+.workspace-shell {
+  padding-bottom: var(--mira-composer-reserve);
+}
+
+.mobile-sidebar-shell {
+  bottom: var(--mira-mobile-sidebar-bottom);
+}
+
 .intro-composer {
   border: 1px solid rgba(255, 255, 255, 0.28);
   background:
@@ -134,9 +165,11 @@ button {
     background-color 260ms ease;
 }
 
-.intro-composer:hover {
-  transform: translateY(-4px);
-  border-color: rgba(255, 255, 255, 0.4);
+@media (hover: hover) {
+  .intro-composer:hover {
+    transform: translateY(-4px);
+    border-color: rgba(255, 255, 255, 0.4);
+  }
 }
 
 .icon-button,
@@ -187,6 +220,141 @@ button {
   background: rgba(255, 255, 255, 0.09);
 }
 
+.markdown-response {
+  line-height: 1.82;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.markdown-response > :first-child {
+  margin-top: 0;
+}
+
+.markdown-response > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-response p,
+.markdown-response ul,
+.markdown-response ol,
+.markdown-response blockquote,
+.markdown-response pre,
+.markdown-response table {
+  margin: 0 0 1em;
+}
+
+.markdown-response h1,
+.markdown-response h2,
+.markdown-response h3,
+.markdown-response h4 {
+  margin: 1.35em 0 0.55em;
+  color: rgba(255, 250, 240, 0.96);
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.02em;
+}
+
+.markdown-response h1 {
+  font-size: 1.45em;
+}
+
+.markdown-response h2 {
+  font-size: 1.25em;
+}
+
+.markdown-response h3,
+.markdown-response h4 {
+  font-size: 1.08em;
+}
+
+.markdown-response ul,
+.markdown-response ol {
+  padding-left: 1.45em;
+}
+
+.markdown-response ul {
+  list-style: disc outside;
+}
+
+.markdown-response ol {
+  list-style: decimal outside;
+}
+
+.markdown-response ul ul {
+  list-style-type: circle;
+}
+
+.markdown-response ul ul ul {
+  list-style-type: square;
+}
+
+.markdown-response li + li {
+  margin-top: 0.38em;
+}
+
+.markdown-response li > p {
+  margin-bottom: 0.45em;
+}
+
+.markdown-response blockquote {
+  border-left: 2px solid rgba(255, 255, 255, 0.28);
+  padding-left: 1em;
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.markdown-response a {
+  color: #c8f2e0;
+  text-decoration: underline;
+  text-decoration-color: rgba(200, 242, 224, 0.45);
+  text-underline-offset: 3px;
+}
+
+.markdown-response code {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(5, 22, 28, 0.34);
+  padding: 0.12em 0.38em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.88em;
+}
+
+.markdown-response pre {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  background: rgba(4, 20, 25, 0.55);
+  padding: 14px 16px;
+}
+
+.markdown-response pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 0.84em;
+}
+
+.markdown-response table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.markdown-response th,
+.markdown-response td {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 8px 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.markdown-response hr {
+  margin: 1.5em 0;
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+
 ::-webkit-scrollbar {
   width: 5px;
 }
@@ -206,7 +374,11 @@ button {
 }
 
 @media (max-width: 767px) {
-  .app-background {
+  :root[data-mira-keyboard-open] {
+    --mira-composer-gap: 10px;
+  }
+
+  .app-scene-background {
     background-position: 50% 45%;
   }
 
@@ -218,11 +390,18 @@ button {
 }
 
 @media (min-width: 768px) {
+  :root {
+    --mira-composer-gap: 16px;
+    --mira-composer-gap: max(16px, env(safe-area-inset-bottom));
+    --mira-composer-reserve: calc(110px + var(--mira-composer-gap));
+  }
+
   .app-viewport {
-    top: 0;
     height: 100dvh;
     min-height: 620px;
+    transform: none;
   }
+
 }
 
 @media (prefers-reduced-motion: reduce) {

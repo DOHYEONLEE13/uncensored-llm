@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
   Archive,
@@ -35,6 +35,7 @@ type ConnectionStatus = 'success' | 'failure'
 const CONVERSATIONS_STORAGE_KEY = 'mira-conversations'
 const SELECTED_MODEL_STORAGE_KEY = 'mira-selected-model'
 const FALLBACK_MODELS = ['obsidian/Qwen3.8-27B', 'qwen/qwen3.8-27b-free']
+const MarkdownResponse = lazy(() => import('./MarkdownResponse'))
 
 function loadConversations(): Conversation[] {
   try {
@@ -86,6 +87,119 @@ function Logo() {
       <p className="mt-1 text-[9px] font-semibold tracking-[0.25em] text-white/55 uppercase">
         Personal Intelligence
       </p>
+    </div>
+  )
+}
+
+type ModelPickerProps = {
+  value: string
+  models: string[]
+  onChange: (model: string) => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  placement?: 'above' | 'below'
+  compact?: boolean
+}
+
+function ModelPicker({
+  value,
+  models,
+  onChange,
+  open,
+  onOpenChange,
+  placement = 'below',
+  compact = false,
+}: ModelPickerProps) {
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) onOpenChange(false)
+    }
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') onOpenChange(false)
+    }
+
+    document.addEventListener('pointerdown', closeOnPointerDown)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnPointerDown)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [onOpenChange, open])
+
+  return (
+    <div ref={rootRef} className="relative min-w-0">
+      <button
+        type="button"
+        onMouseDown={(event) => {
+          if (compact) event.preventDefault()
+        }}
+        onClick={() => onOpenChange(!open)}
+        className={
+          compact
+            ? 'flex h-8 min-w-0 max-w-[220px] items-center gap-1.5 rounded-xl border border-white/12 bg-white/7 px-2.5 text-left text-[9px] text-white/62 transition hover:border-white/22 hover:bg-white/11 hover:text-white/85'
+            : 'flex min-w-0 max-w-[270px] items-center gap-2 text-left'
+        }
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label="AI 모델 선택"
+      >
+        {compact && <span className="shrink-0 text-white/35">MODEL</span>}
+        <span
+          className={`truncate font-semibold ${compact ? 'text-[9px]' : 'text-[11px] text-white/90 md:text-[13px]'}`}
+        >
+          {value}
+        </span>
+        <ChevronDown
+          className={`size-3.5 shrink-0 text-white/35 transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: placement === 'above' ? 6 : -6, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: placement === 'above' ? 6 : -6, scale: 0.98 }}
+            transition={{ duration: 0.16 }}
+            role="listbox"
+            aria-label="사용할 AI 모델"
+            className={`absolute left-0 z-[80] w-[270px] max-w-[calc(100vw-40px)] overflow-hidden rounded-2xl border border-white/20 bg-[#15383e]/96 p-1.5 shadow-[0_18px_50px_rgba(3,17,21,0.38)] backdrop-blur-2xl ${
+              placement === 'above' ? 'bottom-[calc(100%+8px)]' : 'top-[calc(100%+8px)]'
+            }`}
+          >
+            {models.map((model) => (
+              <button
+                key={model}
+                type="button"
+                onMouseDown={(event) => {
+                  if (compact) event.preventDefault()
+                }}
+                role="option"
+                aria-selected={model === value}
+                onClick={() => {
+                  onChange(model)
+                  onOpenChange(false)
+                }}
+                className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-[10px] transition hover:bg-white/10 ${
+                  model === value ? 'bg-white/12 text-white' : 'text-white/60'
+                }`}
+              >
+                <span className="min-w-0 flex-1 truncate">{model}</span>
+                {model.endsWith('-free') && (
+                  <span className="rounded-md bg-[#b9ecd7]/12 px-1.5 py-0.5 text-[8px] font-semibold text-[#c8f2e0]">
+                    FREE
+                  </span>
+                )}
+                {model === value && <Check className="size-3.5 shrink-0" />}
+              </button>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
@@ -232,7 +346,7 @@ function EmptyState() {
 
 function MessageList({ messages, isThinking }: { messages: ChatMessage[]; isThinking: boolean }) {
   return (
-    <div className="mx-auto flex w-full max-w-[780px] flex-col gap-6 px-1 py-8 md:px-6">
+    <div className="mx-auto flex w-full max-w-[960px] flex-col gap-7 px-1 py-7 md:px-8 md:py-10">
       <AnimatePresence initial={false}>
         {messages.map((message) => (
           <motion.article
@@ -241,31 +355,33 @@ function MessageList({ messages, isThinking }: { messages: ChatMessage[]; isThin
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.35 }}
-            className={`flex gap-3 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            className={`flex gap-3 ${message.role === 'user' ? 'justify-end' : 'w-full justify-start'}`}
           >
             {message.role === 'assistant' && (
-              <div className="grid size-8 shrink-0 place-items-center rounded-xl border border-white/25 bg-white/15 text-white/80 backdrop-blur-xl">
+              <div className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-xl border border-white/20 bg-white/10 text-white/70 backdrop-blur-xl">
                 <Eye className="size-4" strokeWidth={1.5} />
               </div>
             )}
-            <div
-              className={`max-w-[80%] rounded-[22px] px-4 py-3 text-[13px] leading-6 shadow-lg backdrop-blur-2xl md:text-sm ${
-                message.role === 'user'
-                  ? 'rounded-br-md border border-[#effbf5]/45 bg-[#edf7f3]/88 text-[#1e3b40]'
-                  : 'rounded-bl-md border border-white/20 bg-[#17383e]/46 text-white/85'
-              }`}
-            >
-              {message.content}
-            </div>
+            {message.role === 'user' ? (
+              <div className="max-w-[82%] whitespace-pre-wrap break-words rounded-[22px] rounded-br-md border border-[#effbf5]/45 bg-[#edf7f3]/88 px-4 py-3 text-[13px] leading-6 text-[#1e3b40] shadow-lg backdrop-blur-2xl md:max-w-[72%] md:text-sm">
+                {message.content}
+              </div>
+            ) : (
+              <div className="markdown-response min-w-0 flex-1 py-1 text-[14px] text-white/88 md:text-[15px]">
+                <Suspense fallback={<p className="whitespace-pre-wrap">{message.content}</p>}>
+                  <MarkdownResponse content={message.content} />
+                </Suspense>
+              </div>
+            )}
           </motion.article>
         ))}
       </AnimatePresence>
       {isThinking && messages.at(-1)?.role !== 'assistant' && (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center gap-3">
-          <div className="grid size-8 place-items-center rounded-xl border border-white/25 bg-white/15 text-white/80">
+          <div className="grid size-8 place-items-center rounded-xl border border-white/20 bg-white/10 text-white/70">
             <Eye className="size-4" strokeWidth={1.5} />
           </div>
-          <div className="flex gap-1 rounded-2xl border border-white/20 bg-[#17383e]/40 px-4 py-3 backdrop-blur-2xl">
+          <div className="flex gap-1 px-1 py-3">
             {[0, 1, 2].map((dot) => (
               <motion.span
                 key={dot}
@@ -294,10 +410,11 @@ export default function App() {
     () => window.localStorage.getItem(SELECTED_MODEL_STORAGE_KEY) ?? FALLBACK_MODELS[0],
   )
   const [availableModels, setAvailableModels] = useState<string[]>(FALLBACK_MODELS)
-  const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  const [openModelPicker, setOpenModelPicker] = useState<'header' | 'composer' | null>(null)
   const [isThinking, setIsThinking] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesViewportRef = useRef<HTMLDivElement>(null)
+  const messagesContentRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
   const requestControllerRef = useRef<AbortController | null>(null)
 
@@ -308,12 +425,20 @@ export default function App() {
     const updateViewport = () => {
       window.cancelAnimationFrame(animationFrame)
       animationFrame = window.requestAnimationFrame(() => {
+        if (viewport && viewport.scale !== 1) return
+
         const height = viewport?.height ?? window.innerHeight
         const offsetTop = viewport?.offsetTop ?? 0
-        document.documentElement.style.setProperty('--mira-viewport-height', `${height}px`)
-        document.documentElement.style.setProperty('--mira-viewport-top', `${offsetTop}px`)
+        const composerFocused = document.activeElement === textareaRef.current
 
-        if (document.activeElement === textareaRef.current) {
+        document.documentElement.style.setProperty('--mira-viewport-height', `${height}px`)
+        document.documentElement.style.setProperty('--mira-viewport-offset', `${offsetTop}px`)
+        document.documentElement.toggleAttribute(
+          'data-mira-keyboard-open',
+          composerFocused && window.matchMedia('(max-width: 767px)').matches,
+        )
+
+        if (composerFocused && stickToBottomRef.current) {
           const messagesViewport = messagesViewportRef.current
           if (messagesViewport) messagesViewport.scrollTop = messagesViewport.scrollHeight
         }
@@ -331,7 +456,8 @@ export default function App() {
       viewport?.removeEventListener('resize', updateViewport)
       viewport?.removeEventListener('scroll', updateViewport)
       document.documentElement.style.removeProperty('--mira-viewport-height')
-      document.documentElement.style.removeProperty('--mira-viewport-top')
+      document.documentElement.style.removeProperty('--mira-viewport-offset')
+      document.documentElement.removeAttribute('data-mira-keyboard-open')
     }
   }, [])
 
@@ -339,7 +465,7 @@ export default function App() {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
         setSidebarOpen(false)
-        setModelMenuOpen(false)
+        setOpenModelPicker(null)
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -366,6 +492,27 @@ export default function App() {
 
     return () => window.cancelAnimationFrame(animationFrame)
   }, [isThinking, messages, workspaceOpen])
+
+  useEffect(() => {
+    const content = messagesContentRef.current
+    if (!workspaceOpen || !content || typeof ResizeObserver === 'undefined') return
+
+    let animationFrame = 0
+    const observer = new ResizeObserver(() => {
+      if (!stickToBottomRef.current) return
+      window.cancelAnimationFrame(animationFrame)
+      animationFrame = window.requestAnimationFrame(() => {
+        const messagesViewport = messagesViewportRef.current
+        if (messagesViewport) messagesViewport.scrollTop = messagesViewport.scrollHeight
+      })
+    })
+
+    observer.observe(content)
+    return () => {
+      window.cancelAnimationFrame(animationFrame)
+      observer.disconnect()
+    }
+  }, [workspaceOpen])
 
   useEffect(() => {
     if (!activeConversationId || messages.length === 0) return
@@ -469,9 +616,10 @@ export default function App() {
     const controller = new AbortController()
     requestControllerRef.current = controller
     let assistantContent = ''
+    let renderFrame = 0
 
-    const appendAssistantContent = (contentDelta: string) => {
-      assistantContent += contentDelta
+    const renderAssistantContent = () => {
+      renderFrame = 0
       setMessages((current) => {
         const assistantExists = current.some((message) => message.id === assistantId)
         if (!assistantExists) {
@@ -481,6 +629,16 @@ export default function App() {
           message.id === assistantId ? { ...message, content: assistantContent } : message,
         )
       })
+    }
+
+    const appendAssistantContent = (contentDelta: string) => {
+      assistantContent += contentDelta
+      if (!renderFrame) renderFrame = window.requestAnimationFrame(renderAssistantContent)
+    }
+
+    const flushAssistantContent = () => {
+      if (renderFrame) window.cancelAnimationFrame(renderFrame)
+      renderAssistantContent()
     }
 
     try {
@@ -540,6 +698,7 @@ export default function App() {
         }
       }
 
+      flushAssistantContent()
       if (!assistantContent.trim()) throw new Error('모델이 빈 응답을 반환했습니다.')
       setConnectionStatus('success')
     } catch (error) {
@@ -555,6 +714,7 @@ export default function App() {
         ]
       })
     } finally {
+      if (renderFrame) window.cancelAnimationFrame(renderFrame)
       if (requestControllerRef.current === controller) requestControllerRef.current = null
       setIsThinking(false)
     }
@@ -568,24 +728,30 @@ export default function App() {
   }
 
   const openWorkspace = () => {
+    if (window.matchMedia('(max-width: 767px)').matches) {
+      document.documentElement.setAttribute('data-mira-keyboard-open', '')
+    }
     setWorkspaceOpen(true)
-    window.setTimeout(() => textareaRef.current?.focus(), prefersReducedMotion ? 0 : 420)
+    textareaRef.current?.focus({ preventScroll: true })
   }
 
   return (
-    <main className="app-viewport app-background overflow-hidden p-2.5 text-white md:p-4">
-      <div className="background-wash absolute inset-0" />
-      <div className="background-grain absolute inset-0 opacity-20" />
+    <>
+      <div aria-hidden="true" className="app-scene-background">
+        <div className="background-wash absolute inset-0" />
+        <div className="background-grain absolute inset-0 opacity-20" />
+      </div>
 
-      <AnimatePresence mode="wait">
+      <main className="app-viewport overflow-hidden p-2.5 text-white md:p-4">
+        <AnimatePresence initial={false} mode="popLayout">
         {!workspaceOpen ? (
           <motion.section
             key="intro"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            exit={{ opacity: 0, scale: 0.985 }}
-            transition={{ duration: prefersReducedMotion ? 0 : 0.35 }}
-            className="relative z-10 mx-auto flex h-full w-full max-w-[980px] flex-col items-center px-3 pb-[138px]"
+            exit={{ opacity: 0 }}
+            transition={{ duration: prefersReducedMotion ? 0 : 0.16 }}
+            className="relative z-10 mx-auto flex h-full w-full max-w-[980px] flex-col items-center px-3 pb-[82px]"
           >
             <motion.div
               initial={{ opacity: 0, y: -12 }}
@@ -604,10 +770,10 @@ export default function App() {
         ) : (
           <motion.div
             key="workspace"
-            initial={{ opacity: 0, scale: 0.985, y: 12 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            transition={{ duration: prefersReducedMotion ? 0 : 0.5, ease: [0.22, 1, 0.36, 1] }}
-            className="relative z-10 mx-auto flex h-full w-full max-w-[1680px] gap-3 pb-[126px] md:gap-4 md:pb-[138px]"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: prefersReducedMotion ? 0 : 0.18 }}
+            className="workspace-shell relative z-10 mx-auto flex h-full w-full max-w-[1680px] gap-3 md:gap-4"
           >
             <Sidebar
               onNewChat={newChat}
@@ -634,7 +800,7 @@ export default function App() {
                     animate={{ x: 0 }}
                     exit={{ x: -320 }}
                     transition={{ type: 'spring', stiffness: 310, damping: 30 }}
-                    className="fixed bottom-[132px] left-2.5 top-2.5 z-50 md:bottom-[144px] lg:hidden"
+                    className="mobile-sidebar-shell fixed left-2.5 top-2.5 z-50 lg:hidden"
                   >
                     <Sidebar
                       mobile
@@ -650,7 +816,7 @@ export default function App() {
               )}
             </AnimatePresence>
 
-            <section className="glass-main flex min-w-0 flex-1 flex-col overflow-hidden rounded-[28px]">
+            <section className="glass-main relative flex min-w-0 flex-1 flex-col rounded-[28px]">
               <header className="flex h-[68px] shrink-0 items-center justify-between border-b border-white/12 px-3 md:px-5">
                 <div className="flex min-w-0 items-center gap-2.5">
                   <button
@@ -661,24 +827,14 @@ export default function App() {
                   >
                     <Menu className="size-[18px]" />
                   </button>
-                  <div className="relative min-w-0">
-                    <button
-                      type="button"
-                      onClick={() => setModelMenuOpen((open) => !open)}
-                      className="flex max-w-[270px] items-center gap-2 text-left"
-                      aria-haspopup="listbox"
-                      aria-expanded={modelMenuOpen}
-                      aria-label="AI 모델 선택"
-                    >
-                      <h2 className="truncate text-[11px] font-semibold text-white/90 md:text-[13px]">
-                        {modelName}
-                      </h2>
-                      <ChevronDown
-                        className={`size-3.5 shrink-0 text-white/35 transition-transform ${
-                          modelMenuOpen ? 'rotate-180' : ''
-                        }`}
-                      />
-                    </button>
+                  <div className="min-w-0">
+                    <ModelPicker
+                      value={modelName}
+                      models={availableModels}
+                      onChange={setModelName}
+                      open={openModelPicker === 'header'}
+                      onOpenChange={(open) => setOpenModelPicker(open ? 'header' : null)}
+                    />
                     <div className="mt-0.5 flex items-center gap-1.5 text-[9px] text-white/38">
                       <span
                         className={`size-1.5 rounded-full ${
@@ -689,44 +845,6 @@ export default function App() {
                       />
                       {connectionStatus === 'success' ? '연결 성공' : '연결 실패'}
                     </div>
-
-                    <AnimatePresence>
-                      {modelMenuOpen && (
-                        <motion.div
-                          initial={{ opacity: 0, y: -6, scale: 0.98 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          exit={{ opacity: 0, y: -6, scale: 0.98 }}
-                          transition={{ duration: 0.16 }}
-                          role="listbox"
-                          aria-label="사용할 AI 모델"
-                          className="absolute left-0 top-[44px] z-40 w-[270px] overflow-hidden rounded-2xl border border-white/20 bg-[#15383e]/95 p-1.5 shadow-[0_18px_50px_rgba(3,17,21,0.38)] backdrop-blur-2xl"
-                        >
-                          {availableModels.map((model) => (
-                            <button
-                              key={model}
-                              type="button"
-                              role="option"
-                              aria-selected={model === modelName}
-                              onClick={() => {
-                                setModelName(model)
-                                setModelMenuOpen(false)
-                              }}
-                              className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-[10px] transition hover:bg-white/10 ${
-                                model === modelName ? 'bg-white/12 text-white' : 'text-white/60'
-                              }`}
-                            >
-                              <span className="min-w-0 flex-1 truncate">{model}</span>
-                              {model.endsWith('-free') && (
-                                <span className="rounded-md bg-[#b9ecd7]/12 px-1.5 py-0.5 text-[8px] font-semibold text-[#c8f2e0]">
-                                  FREE
-                                </span>
-                              )}
-                              {model === modelName && <Check className="size-3.5 shrink-0" />}
-                            </button>
-                          ))}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
                   </div>
                 </div>
 
@@ -736,6 +854,7 @@ export default function App() {
                   onClick={() => {
                     setWorkspaceOpen(false)
                     setSidebarOpen(false)
+                    setOpenModelPicker(null)
                   }}
                   aria-label="채팅 닫기"
                 >
@@ -753,7 +872,10 @@ export default function App() {
                 }}
                 className="relative min-h-0 flex-1 overscroll-contain overflow-y-auto px-3 md:px-6"
               >
-                <div className={`flex min-h-full ${messages.length === 0 ? 'items-center pb-[4vh]' : 'items-start'}`}>
+                <div
+                  ref={messagesContentRef}
+                  className={`flex min-h-full ${messages.length === 0 ? 'items-center pb-[4vh]' : 'items-start'}`}
+                >
                   {messages.length === 0 ? (
                     <EmptyState />
                   ) : (
@@ -764,43 +886,93 @@ export default function App() {
             </section>
           </motion.div>
         )}
-      </AnimatePresence>
+        </AnimatePresence>
 
-      <motion.div
-        layout
-        className={`absolute bottom-2.5 left-2.5 right-2.5 z-30 transition-[padding] duration-500 md:bottom-4 md:left-4 md:right-4 ${
-          workspaceOpen ? 'lg:pl-[296px]' : ''
-        }`}
-      >
+        <div
+          className={`composer-dock absolute left-2.5 right-2.5 z-30 md:left-4 md:right-4 lg:transition-[padding] lg:duration-500 ${
+            workspaceOpen ? 'lg:pl-[296px]' : ''
+          }`}
+        >
         <form onSubmit={submitMessage} className="mx-auto w-full max-w-[820px]">
-          <div className={`rounded-[24px] p-2 shadow-[0_22px_60px_rgba(5,22,28,0.18)] ${workspaceOpen ? 'composer-shell' : 'intro-composer'}`}>
-            <textarea
-              ref={textareaRef}
-              value={draft}
-              onFocus={() => {
-                if (!workspaceOpen) openWorkspace()
-              }}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={handleComposerKeyDown}
-              enterKeyHint="send"
-              rows={1}
-              aria-label="MIRA에게 메시지 보내기"
-              placeholder="MIRA에게 무엇이든 물어보세요"
-              className="max-h-36 min-h-12 w-full resize-none bg-transparent px-3 py-3 text-[16px] leading-6 text-white/90 outline-none placeholder:text-white/38 md:text-sm"
-            />
-            <div className="flex items-center justify-end px-1 pb-1">
-              <button
-                type="submit"
-                disabled={!draft.trim() || isThinking}
-                aria-label="메시지 보내기"
-                className="grid size-9 place-items-center rounded-2xl bg-[#edf7f3] text-[#16353a] shadow-[0_8px_20px_rgba(7,29,35,0.2)] transition hover:-translate-y-0.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35"
-              >
-                <ArrowUp className="size-[17px]" strokeWidth={2} />
-              </button>
+          <motion.div
+            animate={{ height: workspaceOpen ? 108 : 60 }}
+            transition={{
+              duration: prefersReducedMotion ? 0 : 0.28,
+              ease: [0.22, 1, 0.36, 1],
+            }}
+            onClick={() => {
+              if (!workspaceOpen) openWorkspace()
+            }}
+            className={`rounded-[24px] shadow-[0_22px_60px_rgba(5,22,28,0.18)] ${
+              workspaceOpen ? 'composer-shell p-2' : 'intro-composer p-1.5'
+            }`}
+          >
+            <div className="flex h-full min-h-0 flex-col">
+              <div className={`flex min-h-0 items-center ${workspaceOpen ? 'flex-1' : 'h-full'}`}>
+                <textarea
+                  ref={textareaRef}
+                  value={draft}
+                  onFocus={() => {
+                    if (!workspaceOpen) openWorkspace()
+                  }}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onBlur={() => document.documentElement.removeAttribute('data-mira-keyboard-open')}
+                  onKeyDown={handleComposerKeyDown}
+                  enterKeyHint="send"
+                  rows={1}
+                  aria-label="MIRA에게 메시지 보내기"
+                  placeholder="MIRA에게 무엇이든 물어보세요"
+                  className="h-full min-h-0 min-w-0 flex-1 resize-none bg-transparent px-3 py-2 text-[16px] leading-6 text-white/90 outline-none placeholder:text-white/38 md:text-sm"
+                />
+
+                {!workspaceOpen && (
+                  <button
+                    type="submit"
+                    onMouseDown={(event) => event.preventDefault()}
+                    disabled={!draft.trim() || isThinking}
+                    aria-label="메시지 보내기"
+                    className="mr-0.5 grid size-9 shrink-0 place-items-center rounded-2xl bg-[#edf7f3] text-[#16353a] shadow-[0_8px_20px_rgba(7,29,35,0.2)] transition hover:-translate-y-0.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35"
+                  >
+                    <ArrowUp className="size-[17px]" strokeWidth={2} />
+                  </button>
+                )}
+              </div>
+
+              <AnimatePresence initial={false}>
+                {workspaceOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 5 }}
+                    transition={{ duration: prefersReducedMotion ? 0 : 0.18 }}
+                    className="flex h-9 shrink-0 items-center justify-between gap-2 px-1"
+                  >
+                    <ModelPicker
+                      compact
+                      placement="above"
+                      value={modelName}
+                      models={availableModels}
+                      onChange={setModelName}
+                      open={openModelPicker === 'composer'}
+                      onOpenChange={(open) => setOpenModelPicker(open ? 'composer' : null)}
+                    />
+                    <button
+                      type="submit"
+                      onMouseDown={(event) => event.preventDefault()}
+                      disabled={!draft.trim() || isThinking}
+                      aria-label="메시지 보내기"
+                      className="grid size-9 shrink-0 place-items-center rounded-2xl bg-[#edf7f3] text-[#16353a] shadow-[0_8px_20px_rgba(7,29,35,0.2)] transition hover:-translate-y-0.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35"
+                    >
+                      <ArrowUp className="size-[17px]" strokeWidth={2} />
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
-          </div>
+          </motion.div>
         </form>
-      </motion.div>
-    </main>
+        </div>
+      </main>
+    </>
   )
 }
