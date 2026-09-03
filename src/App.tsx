@@ -91,6 +91,18 @@ function Logo() {
   )
 }
 
+function MiraAvatar({ className = '' }: { className?: string }) {
+  return (
+    <img
+      src="/mira-avatar.svg"
+      alt=""
+      aria-hidden="true"
+      draggable={false}
+      className={`shrink-0 select-none ${className}`}
+    />
+  )
+}
+
 type ModelPickerProps = {
   value: string
   models: string[]
@@ -121,7 +133,6 @@ function ModelPicker({
   compact = false,
 }: ModelPickerProps) {
   const rootRef = useRef<HTMLDivElement>(null)
-  const selectedModel = getModelPresentation(value)
 
   useEffect(() => {
     if (!open) return
@@ -154,7 +165,7 @@ function ModelPicker({
         onClick={() => onOpenChange(!open)}
         className={
           compact
-            ? `group flex h-9 w-full min-w-0 items-center gap-2 rounded-[14px] border px-1.5 pr-1 text-left transition duration-200 ${
+            ? `grid size-9 shrink-0 place-items-center rounded-[14px] border transition duration-200 ${
                 open
                   ? 'border-[#c8f2e0]/40 bg-[#c8f2e0]/12 shadow-[0_0_0_1px_rgba(200,242,224,0.06),0_9px_24px_rgba(5,22,28,0.22)]'
                   : 'border-white/15 bg-white/[0.075] shadow-[inset_0_1px_0_rgba(255,255,255,0.1)] hover:border-white/25 hover:bg-white/[0.11]'
@@ -163,29 +174,11 @@ function ModelPicker({
         }
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label="AI 모델 선택"
+        aria-label={compact ? `AI 모델 선택. 현재 ${value}` : 'AI 모델 선택'}
         title={value}
       >
         {compact ? (
-          <>
-            <span className="relative grid size-7 shrink-0 place-items-center rounded-[10px] border border-[#c8f2e0]/18 bg-[#c8f2e0]/10 text-[#d9f7e9] shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]">
-              <Eye className="size-3.5" strokeWidth={1.6} />
-              <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full border border-[#193c42] bg-[#b9ecd7] shadow-[0_0_6px_rgba(185,236,215,0.9)]" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[7px] font-semibold tracking-[0.16em] text-white/36 uppercase">
-                {selectedModel.provider}
-              </span>
-              <span className="mt-0.5 block truncate text-[10px] font-semibold leading-none text-white/82">
-                {selectedModel.name}
-              </span>
-            </span>
-            <span className="grid size-7 shrink-0 place-items-center rounded-[10px] bg-white/6 text-white/38 transition group-hover:bg-white/10 group-hover:text-white/65">
-              <ChevronDown
-                className={`size-3.5 transition-transform ${open ? 'rotate-180' : ''}`}
-              />
-            </span>
-          </>
+          <Eye className="size-4 text-[#d9f7e9]" strokeWidth={1.6} />
         ) : (
           <>
             <span className="truncate text-[11px] font-semibold text-white/90 md:text-[13px]">
@@ -434,9 +427,7 @@ function MessageList({ messages, isThinking }: { messages: ChatMessage[]; isThin
             className={`flex gap-3 ${message.role === 'user' ? 'justify-end' : 'w-full justify-start'}`}
           >
             {message.role === 'assistant' && (
-              <div className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-xl border border-white/20 bg-white/10 text-white/70 backdrop-blur-xl">
-                <Eye className="size-4" strokeWidth={1.5} />
-              </div>
+              <MiraAvatar className="mt-0.5 size-8 drop-shadow-[0_7px_14px_rgba(4,19,24,0.28)]" />
             )}
             {message.role === 'user' ? (
               <div className="max-w-[82%] whitespace-pre-wrap break-words rounded-[22px] rounded-br-md border border-[#effbf5]/45 bg-[#edf7f3]/88 px-4 py-3 text-[13px] leading-6 text-[#1e3b40] shadow-lg backdrop-blur-2xl md:max-w-[72%] md:text-sm">
@@ -454,9 +445,7 @@ function MessageList({ messages, isThinking }: { messages: ChatMessage[]; isThin
       </AnimatePresence>
       {isThinking && messages.at(-1)?.role !== 'assistant' && (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center gap-3">
-          <div className="grid size-8 place-items-center rounded-xl border border-white/20 bg-white/10 text-white/70">
-            <Eye className="size-4" strokeWidth={1.5} />
-          </div>
+          <MiraAvatar className="size-8 drop-shadow-[0_7px_14px_rgba(4,19,24,0.28)]" />
           <div className="flex gap-1 px-1 py-3">
             {[0, 1, 2].map((dot) => (
               <motion.span

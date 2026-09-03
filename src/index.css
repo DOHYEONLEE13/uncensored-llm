@@ -138,7 +138,8 @@ button {
 }
 
 .compact-model-picker {
-  width: min(260px, calc(100vw - 104px));
+  width: 36px;
+  flex: none;
 }
 
 .workspace-shell {
