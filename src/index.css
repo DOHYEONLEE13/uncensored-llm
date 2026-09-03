@@ -141,6 +141,10 @@ button {
   bottom: var(--mira-composer-gap);
 }
 
+.compact-model-picker {
+  width: min(260px, calc(100vw - 104px));
+}
+
 .workspace-shell {
   padding-bottom: var(--mira-composer-reserve);
 }

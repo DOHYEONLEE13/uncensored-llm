@@ -101,6 +101,16 @@ type ModelPickerProps = {
   compact?: boolean
 }
 
+function getModelPresentation(model: string) {
+  const separatorIndex = model.indexOf('/')
+  if (separatorIndex === -1) return { provider: 'MODEL', name: model }
+
+  return {
+    provider: model.slice(0, separatorIndex),
+    name: model.slice(separatorIndex + 1),
+  }
+}
+
 function ModelPicker({
   value,
   models,
@@ -111,6 +121,7 @@ function ModelPicker({
   compact = false,
 }: ModelPickerProps) {
   const rootRef = useRef<HTMLDivElement>(null)
+  const selectedModel = getModelPresentation(value)
 
   useEffect(() => {
     if (!open) return
@@ -131,7 +142,10 @@ function ModelPicker({
   }, [onOpenChange, open])
 
   return (
-    <div ref={rootRef} className="relative min-w-0">
+    <div
+      ref={rootRef}
+      className={`relative min-w-0 ${compact ? 'compact-model-picker' : ''}`}
+    >
       <button
         type="button"
         onMouseDown={(event) => {
@@ -140,22 +154,48 @@ function ModelPicker({
         onClick={() => onOpenChange(!open)}
         className={
           compact
-            ? 'flex h-8 min-w-0 max-w-[220px] items-center gap-1.5 rounded-xl border border-white/12 bg-white/7 px-2.5 text-left text-[9px] text-white/62 transition hover:border-white/22 hover:bg-white/11 hover:text-white/85'
+            ? `group flex h-9 w-full min-w-0 items-center gap-2 rounded-[14px] border px-1.5 pr-1 text-left transition duration-200 ${
+                open
+                  ? 'border-[#c8f2e0]/40 bg-[#c8f2e0]/12 shadow-[0_0_0_1px_rgba(200,242,224,0.06),0_9px_24px_rgba(5,22,28,0.22)]'
+                  : 'border-white/15 bg-white/[0.075] shadow-[inset_0_1px_0_rgba(255,255,255,0.1)] hover:border-white/25 hover:bg-white/[0.11]'
+              }`
             : 'flex min-w-0 max-w-[270px] items-center gap-2 text-left'
         }
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label="AI 모델 선택"
+        title={value}
       >
-        {compact && <span className="shrink-0 text-white/35">MODEL</span>}
-        <span
-          className={`truncate font-semibold ${compact ? 'text-[9px]' : 'text-[11px] text-white/90 md:text-[13px]'}`}
-        >
-          {value}
-        </span>
-        <ChevronDown
-          className={`size-3.5 shrink-0 text-white/35 transition-transform ${open ? 'rotate-180' : ''}`}
-        />
+        {compact ? (
+          <>
+            <span className="relative grid size-7 shrink-0 place-items-center rounded-[10px] border border-[#c8f2e0]/18 bg-[#c8f2e0]/10 text-[#d9f7e9] shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]">
+              <Eye className="size-3.5" strokeWidth={1.6} />
+              <span className="absolute right-0.5 top-0.5 size-1.5 rounded-full border border-[#193c42] bg-[#b9ecd7] shadow-[0_0_6px_rgba(185,236,215,0.9)]" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[7px] font-semibold tracking-[0.16em] text-white/36 uppercase">
+                {selectedModel.provider}
+              </span>
+              <span className="mt-0.5 block truncate text-[10px] font-semibold leading-none text-white/82">
+                {selectedModel.name}
+              </span>
+            </span>
+            <span className="grid size-7 shrink-0 place-items-center rounded-[10px] bg-white/6 text-white/38 transition group-hover:bg-white/10 group-hover:text-white/65">
+              <ChevronDown
+                className={`size-3.5 transition-transform ${open ? 'rotate-180' : ''}`}
+              />
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="truncate text-[11px] font-semibold text-white/90 md:text-[13px]">
+              {value}
+            </span>
+            <ChevronDown
+              className={`size-3.5 shrink-0 text-white/35 transition-transform ${open ? 'rotate-180' : ''}`}
+            />
+          </>
+        )}
       </button>
 
       <AnimatePresence>
@@ -167,36 +207,72 @@ function ModelPicker({
             transition={{ duration: 0.16 }}
             role="listbox"
             aria-label="사용할 AI 모델"
-            className={`absolute left-0 z-[80] w-[270px] max-w-[calc(100vw-40px)] overflow-hidden rounded-2xl border border-white/20 bg-[#15383e]/96 p-1.5 shadow-[0_18px_50px_rgba(3,17,21,0.38)] backdrop-blur-2xl ${
+            className={`absolute left-0 z-[80] w-[294px] max-w-[calc(100vw-40px)] overflow-hidden rounded-[20px] border border-white/18 bg-[#123238]/97 p-1.5 shadow-[0_24px_64px_rgba(3,17,21,0.48)] backdrop-blur-2xl ${
               placement === 'above' ? 'bottom-[calc(100%+8px)]' : 'top-[calc(100%+8px)]'
             }`}
           >
-            {models.map((model) => (
-              <button
-                key={model}
-                type="button"
-                onMouseDown={(event) => {
-                  if (compact) event.preventDefault()
-                }}
-                role="option"
-                aria-selected={model === value}
-                onClick={() => {
-                  onChange(model)
-                  onOpenChange(false)
-                }}
-                className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-[10px] transition hover:bg-white/10 ${
-                  model === value ? 'bg-white/12 text-white' : 'text-white/60'
-                }`}
-              >
-                <span className="min-w-0 flex-1 truncate">{model}</span>
-                {model.endsWith('-free') && (
-                  <span className="rounded-md bg-[#b9ecd7]/12 px-1.5 py-0.5 text-[8px] font-semibold text-[#c8f2e0]">
-                    FREE
+            <div className="flex items-center justify-between px-3 pb-2 pt-2">
+              <span className="text-[9px] font-semibold tracking-[0.16em] text-white/48 uppercase">
+                모델 선택
+              </span>
+              <span className="text-[8px] font-semibold tracking-[0.12em] text-white/24 uppercase">
+                {models.length} available
+              </span>
+            </div>
+            <div className="mb-1 h-px bg-white/8" />
+            {models.map((model) => {
+              const presentation = getModelPresentation(model)
+              const selected = model === value
+
+              return (
+                <button
+                  key={model}
+                  type="button"
+                  onMouseDown={(event) => {
+                    if (compact) event.preventDefault()
+                  }}
+                  role="option"
+                  aria-selected={selected}
+                  onClick={() => {
+                    onChange(model)
+                    onOpenChange(false)
+                  }}
+                  className={`group/model flex w-full items-center gap-2.5 rounded-[14px] px-2.5 py-2.5 text-left transition ${
+                    selected
+                      ? 'bg-[#c8f2e0]/12 text-white shadow-[inset_0_0_0_1px_rgba(200,242,224,0.1)]'
+                      : 'text-white/60 hover:bg-white/8 hover:text-white/88'
+                  }`}
+                >
+                  <span
+                    className={`grid size-8 shrink-0 place-items-center rounded-[11px] border transition ${
+                      selected
+                        ? 'border-[#c8f2e0]/24 bg-[#c8f2e0]/12 text-[#d9f7e9]'
+                        : 'border-white/10 bg-white/5 text-white/38 group-hover/model:border-white/18 group-hover/model:text-white/65'
+                    }`}
+                  >
+                    <Eye className="size-3.5" strokeWidth={1.55} />
                   </span>
-                )}
-                {model === value && <Check className="size-3.5 shrink-0" />}
-              </button>
-            ))}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[7px] font-semibold tracking-[0.14em] text-white/34 uppercase">
+                      {presentation.provider}
+                    </span>
+                    <span className="mt-1 block truncate text-[10px] font-semibold leading-none">
+                      {presentation.name}
+                    </span>
+                  </span>
+                  {model.endsWith('-free') && (
+                    <span className="rounded-md border border-[#b9ecd7]/15 bg-[#b9ecd7]/10 px-1.5 py-0.5 text-[7px] font-bold tracking-[0.08em] text-[#c8f2e0]">
+                      FREE
+                    </span>
+                  )}
+                  {selected && (
+                    <span className="grid size-6 shrink-0 place-items-center rounded-full bg-[#c8f2e0]/12 text-[#c8f2e0]">
+                      <Check className="size-3.5" strokeWidth={2.2} />
+                    </span>
+                  )}
+                </button>
+              )
+            })}
           </motion.div>
         )}
       </AnimatePresence>
