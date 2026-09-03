@@ -105,10 +105,16 @@ export function getOrcaRouterStatus() {
   }
 }
 
-function sendJson(response: ServerResponse, status: number, body: unknown) {
+function sendJson(
+  response: ServerResponse,
+  status: number,
+  body: unknown,
+  extraHeaders: Record<string, string> = {},
+) {
   response.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
+    ...extraHeaders,
   })
   response.end(JSON.stringify(body))
 }
@@ -230,13 +236,14 @@ export async function handleOrcaRouterChat(request: IncomingMessage, response: S
 
     if (!upstream.ok) {
       const error = parseUpstreamError(await upstream.text(), provider)
+      const requestId = upstream.headers.get('x-request-id')
       sendJson(response, upstream.status || 502, {
         error: error.message,
         type: error.type,
         code: error.code,
         status: upstream.status,
         provider: provider.id,
-      })
+      }, requestId ? { 'X-Request-ID': requestId } : undefined)
       return
     }
 

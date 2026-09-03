@@ -71,11 +71,12 @@ const PROVIDERS: Record<ProviderId, ProviderConfig> = {
   },
 }
 
-function json(body: unknown, status = 200) {
+function json(body: unknown, status = 200, extraHeaders: Record<string, string> = {}) {
   return Response.json(body, {
     status,
     headers: {
       'Cache-Control': 'no-store',
+      ...extraHeaders,
     },
   })
 }
@@ -200,6 +201,7 @@ export async function onRequest({ request, env }: PagesContext) {
 
     if (!upstream.ok) {
       const error = parseUpstreamError(await upstream.text(), provider)
+      const requestId = upstream.headers.get('x-request-id')
       return json(
         {
           error: error.message,
@@ -209,6 +211,7 @@ export async function onRequest({ request, env }: PagesContext) {
           provider: provider.id,
         },
         upstream.status,
+        requestId ? { 'X-Request-ID': requestId } : undefined,
       )
     }
 
