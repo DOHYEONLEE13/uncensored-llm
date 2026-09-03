@@ -41,13 +41,11 @@ body {
 .app-viewport {
   position: fixed;
   z-index: 1;
-  top: 0;
+  top: var(--mira-viewport-offset, 0px);
   right: 0;
   left: 0;
   height: var(--mira-viewport-height, 100dvh);
   min-height: 0;
-  transform: translate3d(0, var(--mira-viewport-offset, 0px), 0);
-  will-change: height, transform;
 }
 
 button,
@@ -72,9 +70,7 @@ button {
   background-image: url('/mira-background.jpg');
   background-position: center 49%;
   background-size: cover;
-  isolation: isolate;
   pointer-events: none;
-  transform: translateZ(0);
 }
 
 .app-scene-background::before {
@@ -388,8 +384,11 @@ button {
 
   .glass-main {
     border-radius: 24px;
-    backdrop-filter: blur(16px) saturate(120%);
-    -webkit-backdrop-filter: blur(16px) saturate(120%);
+    background:
+      linear-gradient(145deg, rgba(15, 50, 58, 0.38), rgba(12, 36, 43, 0.22)),
+      rgba(18, 49, 56, 0.16);
+    backdrop-filter: blur(22px) saturate(130%);
+    -webkit-backdrop-filter: blur(22px) saturate(130%);
   }
 }
 
@@ -403,7 +402,6 @@ button {
   .app-viewport {
     height: 100dvh;
     min-height: 620px;
-    transform: none;
   }
 
 }
