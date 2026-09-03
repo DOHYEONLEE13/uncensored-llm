@@ -5,13 +5,13 @@ type ChatMessage = {
   content: string
 }
 
-type ProviderId = 'orcarouter' | 'openrouter'
+type ProviderId = 'orcarouter' | 'openrouter' | 'nanogpt'
 
 type ProviderConfig = {
   id: ProviderId
   name: string
   chatUrl: string
-  envKey: 'ORCAROUTER_API_KEY' | 'OPENROUTER_API_KEY'
+  envKey: 'ORCAROUTER_API_KEY' | 'OPENROUTER_API_KEY' | 'NANOGPT_API_KEY'
   placeholder: string
 }
 
@@ -34,7 +34,12 @@ export const OPENROUTER_MODELS = [
   'openrouter/free',
   'cognitivecomputations/dolphin-mistral-24b-venice-edition',
 ] as const
-export const AI_MODELS = [...ORCAROUTER_MODELS, ...OPENROUTER_MODELS] as const
+export const NANOGPT_MODELS = [] as const
+export const AI_MODELS = [
+  ...ORCAROUTER_MODELS,
+  ...OPENROUTER_MODELS,
+  ...NANOGPT_MODELS,
+] as const
 export const DEFAULT_MODEL = ORCAROUTER_MODELS[0]
 
 type AiModel = (typeof AI_MODELS)[number]
@@ -54,6 +59,13 @@ const PROVIDERS: Record<ProviderId, ProviderConfig> = {
     envKey: 'OPENROUTER_API_KEY',
     placeholder: '여기에_내_OpenRouter_API_Key',
   },
+  nanogpt: {
+    id: 'nanogpt',
+    name: 'NanoGPT',
+    chatUrl: 'https://nano-gpt.com/api/v1/chat/completions',
+    envKey: 'NANOGPT_API_KEY',
+    placeholder: '여기에_내_NanoGPT_API_Key',
+  },
 }
 
 const MAX_REQUEST_BYTES = 1_000_000
@@ -63,8 +75,13 @@ function isAiModel(value: string): value is AiModel {
 }
 
 function getProviderForModel(model: AiModel) {
-  const isOpenRouterModel = OPENROUTER_MODELS.some((candidate) => candidate === model)
-  return PROVIDERS[isOpenRouterModel ? 'openrouter' : 'orcarouter']
+  if (OPENROUTER_MODELS.some((candidate) => candidate === model)) {
+    return PROVIDERS.openrouter
+  }
+  if (NANOGPT_MODELS.some((candidate) => candidate === model)) {
+    return PROVIDERS.nanogpt
+  }
+  return PROVIDERS.orcarouter
 }
 
 function getProviderApiKey(provider: ProviderConfig) {
@@ -76,6 +93,7 @@ export function getOrcaRouterStatus() {
   const providerStatus = {
     orcarouter: Boolean(getProviderApiKey(PROVIDERS.orcarouter)),
     openrouter: Boolean(getProviderApiKey(PROVIDERS.openrouter)),
+    nanogpt: Boolean(getProviderApiKey(PROVIDERS.nanogpt)),
   }
   const models = AI_MODELS.filter((model) => providerStatus[getProviderForModel(model).id])
 
@@ -239,6 +257,8 @@ export async function handleOrcaRouterChat(request: IncomingMessage, response: S
     }
     const generationId = upstream.headers.get('x-generation-id')
     if (generationId) headers['X-Generation-Id'] = generationId
+    const requestId = upstream.headers.get('x-request-id')
+    if (requestId) headers['X-Request-ID'] = requestId
 
     response.writeHead(200, headers)
     response.flushHeaders()

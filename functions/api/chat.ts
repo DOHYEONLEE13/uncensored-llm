@@ -3,11 +3,12 @@ type ChatMessage = {
   content: string
 }
 
-type ProviderId = 'orcarouter' | 'openrouter'
+type ProviderId = 'orcarouter' | 'openrouter' | 'nanogpt'
 
 type AiEnv = {
   ORCAROUTER_API_KEY?: string
   OPENROUTER_API_KEY?: string
+  NANOGPT_API_KEY?: string
 }
 
 type PagesContext = {
@@ -39,7 +40,8 @@ const OPENROUTER_MODELS = [
   'openrouter/free',
   'cognitivecomputations/dolphin-mistral-24b-venice-edition',
 ] as const
-const AI_MODELS = [...ORCAROUTER_MODELS, ...OPENROUTER_MODELS] as const
+const NANOGPT_MODELS = [] as const
+const AI_MODELS = [...ORCAROUTER_MODELS, ...OPENROUTER_MODELS, ...NANOGPT_MODELS] as const
 const DEFAULT_MODEL = ORCAROUTER_MODELS[0]
 const MAX_REQUEST_BYTES = 1_000_000
 
@@ -60,6 +62,13 @@ const PROVIDERS: Record<ProviderId, ProviderConfig> = {
     envKey: 'OPENROUTER_API_KEY',
     placeholder: '여기에_내_OpenRouter_API_Key',
   },
+  nanogpt: {
+    id: 'nanogpt',
+    name: 'NanoGPT',
+    chatUrl: 'https://nano-gpt.com/api/v1/chat/completions',
+    envKey: 'NANOGPT_API_KEY',
+    placeholder: '여기에_내_NanoGPT_API_Key',
+  },
 }
 
 function json(body: unknown, status = 200) {
@@ -76,8 +85,13 @@ function isAiModel(value: string): value is AiModel {
 }
 
 function getProviderForModel(model: AiModel) {
-  const isOpenRouterModel = OPENROUTER_MODELS.some((candidate) => candidate === model)
-  return PROVIDERS[isOpenRouterModel ? 'openrouter' : 'orcarouter']
+  if (OPENROUTER_MODELS.some((candidate) => candidate === model)) {
+    return PROVIDERS.openrouter
+  }
+  if (NANOGPT_MODELS.some((candidate) => candidate === model)) {
+    return PROVIDERS.nanogpt
+  }
+  return PROVIDERS.orcarouter
 }
 
 function getProviderApiKey(env: AiEnv, provider: ProviderConfig) {
@@ -216,6 +230,8 @@ export async function onRequest({ request, env }: PagesContext) {
     }
     const generationId = upstream.headers.get('x-generation-id')
     if (generationId) headers['X-Generation-Id'] = generationId
+    const requestId = upstream.headers.get('x-request-id')
+    if (requestId) headers['X-Request-ID'] = requestId
 
     return new Response(upstream.body, {
       status: 200,

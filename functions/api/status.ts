@@ -1,6 +1,7 @@
 type AiEnv = {
   ORCAROUTER_API_KEY?: string
   OPENROUTER_API_KEY?: string
+  NANOGPT_API_KEY?: string
 }
 
 type PagesContext = {
@@ -13,6 +14,7 @@ const OPENROUTER_MODELS = [
   'openrouter/free',
   'cognitivecomputations/dolphin-mistral-24b-venice-edition',
 ] as const
+const NANOGPT_MODELS = [] as const
 const DEFAULT_MODEL = ORCAROUTER_MODELS[0]
 
 function isConfigured(apiKey: string | undefined, placeholder: string) {
@@ -28,10 +30,12 @@ export function onRequest({ request, env }: PagesContext) {
   const providers = {
     orcarouter: isConfigured(env.ORCAROUTER_API_KEY, '여기에_내_OrcaRouter_API_Key'),
     openrouter: isConfigured(env.OPENROUTER_API_KEY, '여기에_내_OpenRouter_API_Key'),
+    nanogpt: isConfigured(env.NANOGPT_API_KEY, '여기에_내_NanoGPT_API_Key'),
   }
   const models = [
     ...(providers.orcarouter ? ORCAROUTER_MODELS : []),
     ...(providers.openrouter ? OPENROUTER_MODELS : []),
+    ...(providers.nanogpt ? NANOGPT_MODELS : []),
   ]
 
   return Response.json(
