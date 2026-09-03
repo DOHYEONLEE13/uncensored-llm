@@ -1,3 +1,11 @@
+import {
+  DEFAULT_MODEL,
+  NANOGPT_MODELS,
+  OPENROUTER_MODELS,
+  ORCAROUTER_MODELS,
+  getConfiguredModelMetadata,
+} from '../_modelCatalog'
+
 type AiEnv = {
   ORCAROUTER_API_KEY?: string
   OPENROUTER_API_KEY?: string
@@ -8,14 +16,6 @@ type PagesContext = {
   request: Request
   env: AiEnv
 }
-
-const ORCAROUTER_MODELS = ['obsidian/Qwen3.8-27B', 'qwen/qwen3.8-27b-free'] as const
-const OPENROUTER_MODELS = [
-  'openrouter/free',
-  'cognitivecomputations/dolphin-mistral-24b-venice-edition',
-] as const
-const NANOGPT_MODELS = [] as const
-const DEFAULT_MODEL = ORCAROUTER_MODELS[0]
 
 function isConfigured(apiKey: string | undefined, placeholder: string) {
   const normalized = apiKey?.trim()
@@ -43,6 +43,7 @@ export function onRequest({ request, env }: PagesContext) {
       configured: models.length > 0,
       model: models[0] ?? DEFAULT_MODEL,
       models,
+      modelMetadata: getConfiguredModelMetadata(models),
       providers,
     },
     {

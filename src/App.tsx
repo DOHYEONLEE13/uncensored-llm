@@ -1,8 +1,18 @@
-import { lazy, Suspense, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+} from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
   Archive,
   ArrowUp,
+  BrainCircuit,
   Check,
   ChevronDown,
   CircleUserRound,
@@ -17,10 +27,20 @@ import {
   X,
 } from 'lucide-react'
 
+type TokenUsage = {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  reasoningTokens?: number
+}
+
 type ChatMessage = {
   id: number
   role: 'user' | 'assistant'
   content: string
+  model?: string
+  usage?: TokenUsage
+  tokenEstimate?: number
 }
 
 type Conversation = {
@@ -32,8 +52,28 @@ type Conversation = {
 
 type ConnectionStatus = 'success' | 'failure'
 
+type PublicModelMetadata = {
+  id: string
+  displayName: string
+  provider: 'orcarouter' | 'openrouter' | 'nanogpt'
+  contextWindow: number | null
+  maxOutputTokens: number | null
+  pricing: {
+    promptPerMillion: number
+    completionPerMillion: number
+    currency: 'USD'
+    unit: 'per_million_tokens'
+    asOf: string
+  } | null
+  capabilities: {
+    reasoning: boolean
+    reasoningControl: boolean
+  }
+}
+
 const CONVERSATIONS_STORAGE_KEY = 'mira-conversations'
 const SELECTED_MODEL_STORAGE_KEY = 'mira-selected-model'
+const REASONING_PREFERENCES_STORAGE_KEY = 'mira-reasoning-preferences'
 const FALLBACK_MODELS = [
   'obsidian/Qwen3.8-27B',
   'qwen/qwen3.8-27b-free',
@@ -83,6 +123,102 @@ function createConversationTitle(content: string) {
   return normalized.length > 24 ? `${normalized.slice(0, 24)}…` : normalized
 }
 
+function loadReasoningPreferences() {
+  try {
+    const stored = window.localStorage.getItem(REASONING_PREFERENCES_STORAGE_KEY)
+    if (!stored) return {}
+    const parsed = JSON.parse(stored) as unknown
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
+
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'),
+    )
+  } catch {
+    return {}
+  }
+}
+
+function estimateTextTokens(content: string) {
+  let asciiCharacters = 0
+  let nonAsciiCharacters = 0
+
+  for (const character of content) {
+    if (character.codePointAt(0)! <= 0x7f) asciiCharacters += 1
+    else nonAsciiCharacters += 1
+  }
+
+  return Math.max(0, Math.ceil(asciiCharacters / 4 + nonAsciiCharacters))
+}
+
+function estimateConversationTokens(messages: ChatMessage[]) {
+  return messages.reduce(
+    (total, message) => total + (message.tokenEstimate ?? estimateTextTokens(message.content)) + 4,
+    2,
+  )
+}
+
+function normalizeTokenUsage(value: unknown): TokenUsage | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+
+  const usage = value as {
+    prompt_tokens?: unknown
+    completion_tokens?: unknown
+    total_tokens?: unknown
+    reasoning_tokens?: unknown
+    completion_tokens_details?: { reasoning_tokens?: unknown }
+  }
+  if (
+    typeof usage.prompt_tokens !== 'number' ||
+    typeof usage.completion_tokens !== 'number' ||
+    typeof usage.total_tokens !== 'number'
+  ) {
+    return undefined
+  }
+
+  const detailedReasoningTokens = usage.completion_tokens_details?.reasoning_tokens
+  const reasoningTokens =
+    typeof detailedReasoningTokens === 'number'
+      ? detailedReasoningTokens
+      : typeof usage.reasoning_tokens === 'number'
+        ? usage.reasoning_tokens
+        : undefined
+
+  return {
+    promptTokens: usage.prompt_tokens,
+    completionTokens: usage.completion_tokens,
+    totalTokens: usage.total_tokens,
+    ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+  }
+}
+
+function formatPerMillionPrice(price: number) {
+  if (price === 0) return '$0'
+  const fractionDigits = price < 1 ? 3 : 2
+  return `$${price.toFixed(fractionDigits).replace(/0+$/, '').replace(/\.$/, '')}`
+}
+
+function ContextMeter({ usedTokens, limit }: { usedTokens: number; limit: number | null }) {
+  const rawPercentage = limit ? (usedTokens / limit) * 100 : 0
+  const percentage = Math.min(100, Math.max(0, rawPercentage))
+  const roundedPercentage = Math.round(percentage)
+  const color = percentage >= 85 ? '#ff9d92' : percentage >= 60 ? '#e8c98a' : '#c8f2e0'
+  const label = limit
+    ? `예상 컨텍스트 사용량 ${usedTokens.toLocaleString()} / ${limit.toLocaleString()} 토큰, ${percentage.toFixed(1)}%`
+    : '컨텍스트 한계 정보 없음'
+
+  return (
+    <span
+      className="min-w-[42px] shrink-0 text-center text-[12px] font-bold tabular-nums tracking-[-0.02em]"
+      style={{ color }}
+      role="img"
+      aria-label={label}
+      title={label}
+    >
+      {limit ? `${roundedPercentage}%` : '—'}
+    </span>
+  )
+}
+
 function Logo() {
   return (
     <div className="px-1">
@@ -126,6 +262,10 @@ function getModelPresentation(model: string) {
     provider: model.slice(0, separatorIndex),
     name: model.slice(separatorIndex + 1),
   }
+}
+
+function isFreeModel(model: string) {
+  return model.endsWith('-free') || model === 'openrouter/free'
 }
 
 function ModelPicker({
@@ -199,78 +339,83 @@ function ModelPicker({
       <AnimatePresence>
         {open && (
           <motion.div
-            initial={{ opacity: 0, y: placement === 'above' ? 6 : -6, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: placement === 'above' ? 6 : -6, scale: 0.98 }}
-            transition={{ duration: 0.16 }}
+            initial={{ opacity: 0, y: placement === 'above' ? 5 : -5 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: placement === 'above' ? 5 : -5 }}
+            transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
             role="listbox"
             aria-label="사용할 AI 모델"
-            className={`absolute left-0 z-[80] w-[294px] max-w-[calc(100vw-40px)] overflow-hidden rounded-[20px] border border-white/18 bg-[#123238]/97 p-1.5 shadow-[0_24px_64px_rgba(3,17,21,0.48)] backdrop-blur-2xl ${
+            className={`model-picker-menu absolute z-[80] w-[316px] max-w-[calc(100vw-40px)] overflow-hidden rounded-[18px] p-1.5 ${
+              compact ? 'left-0' : '-left-[46px] lg:left-0'
+            } ${
               placement === 'above' ? 'bottom-[calc(100%+8px)]' : 'top-[calc(100%+8px)]'
             }`}
           >
-            <div className="flex items-center justify-between px-3 pb-2 pt-2">
-              <span className="text-[9px] font-semibold tracking-[0.16em] text-white/48 uppercase">
+            <div className="relative flex items-center justify-between px-3 pb-2.5 pt-2.5">
+              <span className="text-[10px] font-semibold tracking-[-0.01em] text-white/72">
                 모델 선택
               </span>
-              <span className="text-[8px] font-semibold tracking-[0.12em] text-white/24 uppercase">
-                {models.length} available
+              <span className="rounded-full border border-white/8 bg-white/[0.035] px-2 py-1 text-[7px] font-semibold tracking-[0.14em] text-white/30 uppercase">
+                {models.length} models
               </span>
             </div>
-            <div className="mb-1 h-px bg-white/8" />
-            {models.map((model) => {
-              const presentation = getModelPresentation(model)
-              const selected = model === value
+            <div className="model-picker-list max-h-[min(360px,55vh)] space-y-1 overflow-y-auto">
+              {models.map((model) => {
+                const presentation = getModelPresentation(model)
+                const selected = model === value
+                const free = isFreeModel(model)
 
-              return (
-                <button
-                  key={model}
-                  type="button"
-                  onMouseDown={(event) => {
-                    if (compact) event.preventDefault()
-                  }}
-                  role="option"
-                  aria-selected={selected}
-                  onClick={() => {
-                    onChange(model)
-                    onOpenChange(false)
-                  }}
-                  className={`group/model flex w-full items-center gap-2.5 rounded-[14px] px-2.5 py-2.5 text-left transition ${
-                    selected
-                      ? 'bg-[#c8f2e0]/12 text-white shadow-[inset_0_0_0_1px_rgba(200,242,224,0.1)]'
-                      : 'text-white/60 hover:bg-white/8 hover:text-white/88'
-                  }`}
-                >
-                  <span
-                    className={`grid size-8 shrink-0 place-items-center rounded-[11px] border transition ${
+                return (
+                  <button
+                    key={model}
+                    type="button"
+                    onMouseDown={(event) => {
+                      if (compact) event.preventDefault()
+                    }}
+                    role="option"
+                    aria-selected={selected}
+                    onClick={() => {
+                      onChange(model)
+                      onOpenChange(false)
+                    }}
+                    className={`group/model relative flex min-h-14 w-full items-center gap-2.5 rounded-[13px] border px-3 py-2.5 text-left transition duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/30 ${
                       selected
-                        ? 'border-[#c8f2e0]/24 bg-[#c8f2e0]/12 text-[#d9f7e9]'
-                        : 'border-white/10 bg-white/5 text-white/38 group-hover/model:border-white/18 group-hover/model:text-white/65'
+                        ? 'border-[#c8f2e0]/16 bg-[#c8f2e0]/[0.09] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.055)]'
+                        : 'border-transparent text-white/62 hover:border-white/8 hover:bg-white/[0.055] hover:text-white/90'
                     }`}
+                    title={model}
                   >
-                    <Eye className="size-3.5" strokeWidth={1.55} />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[7px] font-semibold tracking-[0.14em] text-white/34 uppercase">
-                      {presentation.provider}
+                    <span className="grid w-3 shrink-0 place-items-center" aria-hidden="true">
+                      <span
+                        className={`size-1.5 rounded-full shadow-[0_0_0_3px_rgba(255,255,255,0.035)] transition ${
+                          selected
+                            ? 'bg-[#c8f2e0] shadow-[0_0_0_3px_rgba(200,242,224,0.09)]'
+                            : 'bg-white/28 group-hover/model:bg-white/50'
+                        }`}
+                      />
                     </span>
-                    <span className="mt-1 block truncate text-[10px] font-semibold leading-none">
-                      {presentation.name}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[8px] font-semibold tracking-[0.13em] text-white/35 uppercase">
+                        {presentation.provider}
+                      </span>
+                      <span className="mt-1 block truncate text-[11px] font-semibold leading-none tracking-[-0.01em]">
+                        {presentation.name}
+                      </span>
                     </span>
-                  </span>
-                  {model.endsWith('-free') && (
-                    <span className="rounded-md border border-[#b9ecd7]/15 bg-[#b9ecd7]/10 px-1.5 py-0.5 text-[7px] font-bold tracking-[0.08em] text-[#c8f2e0]">
-                      FREE
-                    </span>
-                  )}
-                  {selected && (
-                    <span className="grid size-6 shrink-0 place-items-center rounded-full bg-[#c8f2e0]/12 text-[#c8f2e0]">
-                      <Check className="size-3.5" strokeWidth={2.2} />
-                    </span>
-                  )}
-                </button>
-              )
-            })}
+                    {free && (
+                      <span className="rounded-md border border-[#b9ecd7]/14 bg-[#b9ecd7]/[0.075] px-1.5 py-0.5 text-[7px] font-bold tracking-[0.08em] text-[#c8f2e0]/85">
+                        FREE
+                      </span>
+                    )}
+                    {selected && (
+                      <span className="grid size-5 shrink-0 place-items-center rounded-full bg-[#c8f2e0]/12 text-[#c8f2e0]">
+                        <Check className="size-3" strokeWidth={2.2} />
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -480,6 +625,10 @@ export default function App() {
     () => window.localStorage.getItem(SELECTED_MODEL_STORAGE_KEY) ?? FALLBACK_MODELS[0],
   )
   const [availableModels, setAvailableModels] = useState<string[]>(FALLBACK_MODELS)
+  const [modelMetadata, setModelMetadata] = useState<Record<string, PublicModelMetadata>>({})
+  const [reasoningPreferences, setReasoningPreferences] = useState<Record<string, boolean>>(
+    loadReasoningPreferences,
+  )
   const [openModelPicker, setOpenModelPicker] = useState<'header' | 'composer' | null>(null)
   const [isThinking, setIsThinking] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -487,6 +636,36 @@ export default function App() {
   const messagesContentRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
   const requestControllerRef = useRef<AbortController | null>(null)
+  const selectedModelMetadata = modelMetadata[modelName]
+  const supportsReasoning = Boolean(selectedModelMetadata?.capabilities.reasoningControl)
+  const reasoningEnabled = supportsReasoning
+    ? (reasoningPreferences[modelName] ?? modelName.endsWith(':thinking'))
+    : false
+  const contextUsage = useMemo(() => {
+    const latestMessage = messages.at(-1)
+    const reportedTokens =
+      latestMessage?.role === 'assistant' && latestMessage.model === modelName
+        ? latestMessage.usage
+          ? Math.max(
+              0,
+              latestMessage.usage.totalTokens - (latestMessage.usage.reasoningTokens ?? 0),
+            )
+          : undefined
+        : undefined
+    const usedTokens = reportedTokens ?? estimateConversationTokens(messages)
+    const draftTokens = draft.trim() ? estimateTextTokens(draft) + 4 : 0
+
+    return {
+      usedTokens: usedTokens + draftTokens,
+      limit: selectedModelMetadata?.contextWindow ?? null,
+    }
+  }, [draft, messages, modelName, selectedModelMetadata?.contextWindow])
+  const pricingLabel = useMemo(() => {
+    const pricing = selectedModelMetadata?.pricing
+    if (!pricing) return '요금 정보 없음'
+    if (pricing.promptPerMillion === 0 && pricing.completionPerMillion === 0) return '무료 · 1M 토큰'
+    return `IN ${formatPerMillionPrice(pricing.promptPerMillion)} · OUT ${formatPerMillionPrice(pricing.completionPerMillion)} / 1M`
+  }, [selectedModelMetadata?.pricing])
 
   useEffect(() => {
     const viewport = window.visualViewport
@@ -553,6 +732,13 @@ export default function App() {
   }, [modelName])
 
   useEffect(() => {
+    window.localStorage.setItem(
+      REASONING_PREFERENCES_STORAGE_KEY,
+      JSON.stringify(reasoningPreferences),
+    )
+  }, [reasoningPreferences])
+
+  useEffect(() => {
     if (!workspaceOpen || !stickToBottomRef.current) return
 
     const animationFrame = window.requestAnimationFrame(() => {
@@ -607,12 +793,18 @@ export default function App() {
     fetch('/api/status', { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error('status request failed')
-        return response.json() as Promise<{ configured: boolean; model: string; models?: string[] }>
+        return response.json() as Promise<{
+          configured: boolean
+          model: string
+          models?: string[]
+          modelMetadata?: Record<string, PublicModelMetadata>
+        }>
       })
       .then((status) => {
         const models = status.models?.length ? status.models : FALLBACK_MODELS
         setConnectionStatus(status.configured ? 'success' : 'failure')
         setAvailableModels(models)
+        setModelMetadata(status.modelMetadata ?? {})
         setModelName((current) => (models.includes(current) ? current : status.model))
       })
       .catch((error: unknown) => {
@@ -671,9 +863,19 @@ export default function App() {
     const content = draft.trim()
     if (!content || isThinking) return
 
+    const requestModel = modelName
+    const requestSupportsReasoning = Boolean(
+      modelMetadata[requestModel]?.capabilities.reasoningControl,
+    )
+    const requestReasoningEnabled = requestSupportsReasoning ? reasoningEnabled : false
     const messageId = Date.now()
     const assistantId = messageId + 1
-    const userMessage: ChatMessage = { id: messageId, role: 'user', content }
+    const userMessage: ChatMessage = {
+      id: messageId,
+      role: 'user',
+      content,
+      tokenEstimate: estimateTextTokens(content),
+    }
     const requestMessages = [...messages, userMessage]
     const conversationId = activeConversationId ?? crypto.randomUUID()
 
@@ -686,6 +888,10 @@ export default function App() {
     const controller = new AbortController()
     requestControllerRef.current = controller
     let assistantContent = ''
+    let assistantTokenEstimate = 0
+    let assistantAsciiCharacters = 0
+    let assistantNonAsciiCharacters = 0
+    let assistantUsage: TokenUsage | undefined
     let renderFrame = 0
 
     const renderAssistantContent = () => {
@@ -693,16 +899,41 @@ export default function App() {
       setMessages((current) => {
         const assistantExists = current.some((message) => message.id === assistantId)
         if (!assistantExists) {
-          return [...current, { id: assistantId, role: 'assistant', content: assistantContent }]
+          return [
+            ...current,
+            {
+              id: assistantId,
+              role: 'assistant',
+              content: assistantContent,
+              model: requestModel,
+              usage: assistantUsage,
+              tokenEstimate: assistantTokenEstimate,
+            },
+          ]
         }
         return current.map((message) =>
-          message.id === assistantId ? { ...message, content: assistantContent } : message,
+          message.id === assistantId
+            ? {
+                ...message,
+                content: assistantContent,
+                model: requestModel,
+                usage: assistantUsage,
+                tokenEstimate: assistantTokenEstimate,
+              }
+            : message,
         )
       })
     }
 
     const appendAssistantContent = (contentDelta: string) => {
       assistantContent += contentDelta
+      for (const character of contentDelta) {
+        if (character.codePointAt(0)! <= 0x7f) assistantAsciiCharacters += 1
+        else assistantNonAsciiCharacters += 1
+      }
+      assistantTokenEstimate = Math.ceil(
+        assistantAsciiCharacters / 4 + assistantNonAsciiCharacters,
+      )
       if (!renderFrame) renderFrame = window.requestAnimationFrame(renderAssistantContent)
     }
 
@@ -716,11 +947,12 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: modelName,
+          model: requestModel,
           messages: requestMessages.map(({ role, content: messageContent }) => ({
             role,
             content: messageContent,
           })),
+          reasoningEnabled: requestSupportsReasoning ? requestReasoningEnabled : undefined,
         }),
         signal: controller.signal,
       })
@@ -735,12 +967,9 @@ export default function App() {
       const decoder = new TextDecoder()
       let buffer = ''
       let streamFinished = false
+      let eventDataLines: string[] = []
 
-      const consumeLine = (line: string) => {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data:')) return
-
-        const data = trimmed.slice(5).trim()
+      const consumeEventData = (data: string) => {
         if (data === '[DONE]') {
           streamFinished = true
           return
@@ -756,9 +985,14 @@ export default function App() {
                 type?: string
               }
           choices?: Array<{
-            delta?: { content?: string }
+            delta?: {
+              content?: string
+              reasoning?: string
+              reasoning_content?: string
+            }
             finish_reason?: string | null
           }>
+          usage?: unknown
         }
         if (streamEvent.error) {
           const errorMessage =
@@ -770,8 +1004,29 @@ export default function App() {
         if (streamEvent.choices?.[0]?.finish_reason === 'error') {
           throw new Error('스트리밍 응답 중 오류가 발생했습니다.')
         }
+        const usage = normalizeTokenUsage(streamEvent.usage)
+        if (usage) assistantUsage = usage
         const contentDelta = streamEvent.choices?.[0]?.delta?.content
         if (typeof contentDelta === 'string' && contentDelta) appendAssistantContent(contentDelta)
+      }
+
+      const flushEvent = () => {
+        if (!eventDataLines.length) return
+        const data = eventDataLines.join('\n').trim()
+        eventDataLines = []
+        if (data) consumeEventData(data)
+      }
+
+      const consumeLine = (line: string) => {
+        if (line === '') {
+          flushEvent()
+          return
+        }
+        if (line.startsWith(':')) return
+        if (!line.startsWith('data:')) return
+
+        const value = line.slice(5)
+        eventDataLines.push(value.startsWith(' ') ? value.slice(1) : value)
       }
 
       while (!streamFinished) {
@@ -783,7 +1038,8 @@ export default function App() {
         for (const line of lines) consumeLine(line)
 
         if (done) {
-          if (buffer.trim()) consumeLine(buffer)
+          if (buffer) consumeLine(buffer)
+          flushEvent()
           break
         }
       }
@@ -800,7 +1056,13 @@ export default function App() {
         const withoutIncompleteResponse = current.filter((message) => message.id !== assistantId)
         return [
           ...withoutIncompleteResponse,
-          { id: assistantId, role: 'assistant', content: `오류: ${errorMessage}` },
+          {
+            id: assistantId,
+            role: 'assistant',
+            content: `오류: ${errorMessage}`,
+            model: requestModel,
+            tokenEstimate: estimateTextTokens(errorMessage) + 3,
+          },
         ]
       })
     } finally {
@@ -1037,24 +1299,63 @@ export default function App() {
                     transition={{ duration: prefersReducedMotion ? 0 : 0.18 }}
                     className="flex h-9 shrink-0 items-center justify-between gap-2 px-1"
                   >
-                    <ModelPicker
-                      compact
-                      placement="above"
-                      value={modelName}
-                      models={availableModels}
-                      onChange={setModelName}
-                      open={openModelPicker === 'composer'}
-                      onOpenChange={(open) => setOpenModelPicker(open ? 'composer' : null)}
-                    />
-                    <button
-                      type="submit"
-                      onMouseDown={(event) => event.preventDefault()}
-                      disabled={!draft.trim() || isThinking}
-                      aria-label="메시지 보내기"
-                      className="grid size-9 shrink-0 place-items-center rounded-2xl bg-[#edf7f3] text-[#16353a] shadow-[0_8px_20px_rgba(7,29,35,0.2)] transition hover:-translate-y-0.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35"
-                    >
-                      <ArrowUp className="size-[17px]" strokeWidth={2} />
-                    </button>
+                    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                      <ModelPicker
+                        compact
+                        placement="above"
+                        value={modelName}
+                        models={availableModels}
+                        onChange={setModelName}
+                        open={openModelPicker === 'composer'}
+                        onOpenChange={(open) => setOpenModelPicker(open ? 'composer' : null)}
+                      />
+                      {supportsReasoning && (
+                        <button
+                          type="button"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() =>
+                            setReasoningPreferences((current) => ({
+                              ...current,
+                              [modelName]: !reasoningEnabled,
+                            }))
+                          }
+                          disabled={isThinking}
+                          aria-pressed={reasoningEnabled}
+                          aria-label={`추론 모드 ${reasoningEnabled ? '끄기' : '켜기'}`}
+                          title={`추론 모드: ${reasoningEnabled ? '켜짐' : '꺼짐'} · 추론 토큰은 출력 요금에 포함됩니다`}
+                          className={`relative grid size-9 shrink-0 place-items-center rounded-[14px] border transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                            reasoningEnabled
+                              ? 'border-[#c8f2e0]/28 bg-[#c8f2e0]/10 text-[#d9f7e9] shadow-[inset_0_1px_0_rgba(255,255,255,0.09)]'
+                              : 'border-white/10 bg-white/[0.045] text-white/38 hover:border-white/18 hover:text-white/68'
+                          }`}
+                        >
+                          <BrainCircuit className="size-4" strokeWidth={1.6} />
+                          <span
+                            className={`absolute right-1.5 top-1.5 size-1 rounded-full ${
+                              reasoningEnabled ? 'bg-[#c8f2e0]' : 'bg-white/20'
+                            }`}
+                          />
+                        </button>
+                      )}
+                      <p
+                        className="min-w-0 truncate px-1 text-[12px] font-semibold tracking-[-0.015em] text-white/75"
+                        title={`${modelName} 요금: ${pricingLabel}`}
+                      >
+                        {pricingLabel}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <ContextMeter usedTokens={contextUsage.usedTokens} limit={contextUsage.limit} />
+                      <button
+                        type="submit"
+                        onMouseDown={(event) => event.preventDefault()}
+                        disabled={!draft.trim() || isThinking}
+                        aria-label="메시지 보내기"
+                        className="grid size-9 shrink-0 place-items-center rounded-2xl bg-[#edf7f3] text-[#16353a] shadow-[0_8px_20px_rgba(7,29,35,0.2)] transition hover:-translate-y-0.5 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35"
+                      >
+                        <ArrowUp className="size-[17px]" strokeWidth={2} />
+                      </button>
+                    </div>
                   </motion.div>
                 )}
               </AnimatePresence>

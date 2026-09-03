@@ -1,11 +1,27 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import {
+  AI_MODELS,
+  DEFAULT_MODEL,
+  MODEL_CATALOG,
+  getConfiguredModelMetadata,
+  getProviderIdForModel,
+  isAiModel,
+  type AiModel,
+  type ProviderId,
+} from './modelCatalog.js'
+
+export {
+  AI_MODELS,
+  DEFAULT_MODEL,
+  NANOGPT_MODELS,
+  OPENROUTER_MODELS,
+  ORCAROUTER_MODELS,
+} from './modelCatalog.js'
 
 type ChatMessage = {
   role: 'user' | 'assistant'
   content: string
 }
-
-type ProviderId = 'orcarouter' | 'openrouter' | 'nanogpt'
 
 type ProviderConfig = {
   id: ProviderId
@@ -25,24 +41,6 @@ type UpstreamErrorBody = {
       }
   message?: string
 }
-
-export const ORCAROUTER_MODELS = [
-  'obsidian/Qwen3.8-27B',
-  'qwen/qwen3.8-27b-free',
-] as const
-export const OPENROUTER_MODELS = [
-  'openrouter/free',
-  'cognitivecomputations/dolphin-mistral-24b-venice-edition',
-] as const
-export const NANOGPT_MODELS = [] as const
-export const AI_MODELS = [
-  ...ORCAROUTER_MODELS,
-  ...OPENROUTER_MODELS,
-  ...NANOGPT_MODELS,
-] as const
-export const DEFAULT_MODEL = ORCAROUTER_MODELS[0]
-
-type AiModel = (typeof AI_MODELS)[number]
 
 const PROVIDERS: Record<ProviderId, ProviderConfig> = {
   orcarouter: {
@@ -69,19 +67,13 @@ const PROVIDERS: Record<ProviderId, ProviderConfig> = {
 }
 
 const MAX_REQUEST_BYTES = 1_000_000
-
-function isAiModel(value: string): value is AiModel {
-  return AI_MODELS.some((model) => model === value)
-}
+const MAX_MESSAGES = 100
+const MAX_MESSAGE_CHARACTERS = 64_000
+const MAX_TOTAL_MESSAGE_CHARACTERS = 240_000
+const MAX_COMPLETION_TOKENS = 4_096
 
 function getProviderForModel(model: AiModel) {
-  if (OPENROUTER_MODELS.some((candidate) => candidate === model)) {
-    return PROVIDERS.openrouter
-  }
-  if (NANOGPT_MODELS.some((candidate) => candidate === model)) {
-    return PROVIDERS.nanogpt
-  }
-  return PROVIDERS.orcarouter
+  return PROVIDERS[getProviderIdForModel(model)]
 }
 
 function getProviderApiKey(provider: ProviderConfig) {
@@ -101,6 +93,7 @@ export function getOrcaRouterStatus() {
     configured: models.length > 0,
     model: models[0] ?? DEFAULT_MODEL,
     models,
+    modelMetadata: getConfiguredModelMetadata(models),
     providers: providerStatus,
   }
 }
@@ -149,6 +142,25 @@ function isValidMessages(value: unknown): value is ChatMessage[] {
   )
 }
 
+function getMessageLimitError(messages: ChatMessage[]) {
+  if (messages.length > MAX_MESSAGES) {
+    return `messages는 최대 ${MAX_MESSAGES}개까지 전송할 수 있습니다.`
+  }
+
+  let totalCharacters = 0
+  for (const message of messages) {
+    if (message.content.length > MAX_MESSAGE_CHARACTERS) {
+      return `메시지 하나는 최대 ${MAX_MESSAGE_CHARACTERS.toLocaleString()}자까지 전송할 수 있습니다.`
+    }
+    totalCharacters += message.content.length
+    if (totalCharacters > MAX_TOTAL_MESSAGE_CHARACTERS) {
+      return `전체 대화는 최대 ${MAX_TOTAL_MESSAGE_CHARACTERS.toLocaleString()}자까지 전송할 수 있습니다.`
+    }
+  }
+
+  return undefined
+}
+
 function parseUpstreamError(text: string, provider: ProviderConfig) {
   try {
     const parsed = JSON.parse(text) as UpstreamErrorBody
@@ -192,6 +204,11 @@ export async function handleOrcaRouterChat(request: IncomingMessage, response: S
     sendJson(response, 400, { error: 'messages 형식이 올바르지 않습니다.', type: 'invalid_request' })
     return
   }
+  const messageLimitError = getMessageLimitError(messages)
+  if (messageLimitError) {
+    sendJson(response, 413, { error: messageLimitError, type: 'request_too_large' })
+    return
+  }
 
   const requestedModel =
     typeof payload === 'object' && payload !== null && 'model' in payload && typeof payload.model === 'string'
@@ -200,6 +217,18 @@ export async function handleOrcaRouterChat(request: IncomingMessage, response: S
 
   if (!isAiModel(requestedModel)) {
     sendJson(response, 400, { error: '허용되지 않은 모델입니다.', type: 'invalid_model' })
+    return
+  }
+
+  const reasoningEnabled =
+    typeof payload === 'object' && payload !== null && 'reasoningEnabled' in payload
+      ? payload.reasoningEnabled
+      : undefined
+  if (reasoningEnabled !== undefined && typeof reasoningEnabled !== 'boolean') {
+    sendJson(response, 400, {
+      error: 'reasoningEnabled는 boolean이어야 합니다.',
+      type: 'invalid_request',
+    })
     return
   }
 
@@ -219,6 +248,22 @@ export async function handleOrcaRouterChat(request: IncomingMessage, response: S
   request.once('aborted', abortUpstream)
 
   try {
+    const upstreamBody: Record<string, unknown> = {
+      model: requestedModel,
+      messages,
+      stream: true,
+      max_tokens: Math.min(
+        MODEL_CATALOG[requestedModel].maxOutputTokens ?? MAX_COMPLETION_TOKENS,
+        MAX_COMPLETION_TOKENS,
+      ),
+    }
+    if (provider.id === 'nanogpt') {
+      upstreamBody.stream_options = { include_usage: true }
+      if (MODEL_CATALOG[requestedModel].capabilities.reasoning && reasoningEnabled !== undefined) {
+        upstreamBody.reasoning_effort = reasoningEnabled ? 'medium' : 'none'
+      }
+    }
+
     const upstream = await fetch(provider.chatUrl, {
       method: 'POST',
       headers: {
@@ -226,11 +271,7 @@ export async function handleOrcaRouterChat(request: IncomingMessage, response: S
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
       },
-      body: JSON.stringify({
-        model: requestedModel,
-        messages,
-        stream: true,
-      }),
+      body: JSON.stringify(upstreamBody),
       signal: controller.signal,
     })
 
