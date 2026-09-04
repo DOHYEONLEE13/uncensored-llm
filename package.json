@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server/index.ts --dev",
+    "test": "tsx --test tests/*.test.ts",
     "build": "tsc -b && tsc -p tsconfig.functions.json && vite build && tsc -p tsconfig.server.json",
     "typecheck": "tsc -b && tsc -p tsconfig.functions.json && tsc -p tsconfig.server.json --noEmit",
     "preview": "node dist-server/index.js",

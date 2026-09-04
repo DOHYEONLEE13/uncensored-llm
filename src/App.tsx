@@ -17,6 +17,7 @@ import {
   ChevronDown,
   CircleUserRound,
   Eye,
+  Globe2,
   Menu,
   MessageCircleMore,
   MoreHorizontal,
@@ -26,6 +27,13 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
+import {
+  consumeChatStream,
+  type MiraWebSearchMetadata,
+  type WebSearchMode,
+  type WebSearchSource,
+  type WebSearchStatus,
+} from './chatStream'
 
 type TokenUsage = {
   promptTokens: number
@@ -41,6 +49,10 @@ type ChatMessage = {
   model?: string
   usage?: TokenUsage
   tokenEstimate?: number
+  webSearchMode?: WebSearchMode
+  webSearchStatus?: WebSearchStatus
+  webSearchSources?: WebSearchSource[]
+  webSearchWarning?: string
 }
 
 type Conversation = {
@@ -74,6 +86,7 @@ type PublicModelMetadata = {
 const CONVERSATIONS_STORAGE_KEY = 'mira-conversations'
 const SELECTED_MODEL_STORAGE_KEY = 'mira-selected-model'
 const REASONING_PREFERENCES_STORAGE_KEY = 'mira-reasoning-preferences'
+const WEB_SEARCH_MODE_STORAGE_KEY = 'mira-web-search-mode'
 const FALLBACK_MODELS = [
   'obsidian/Qwen3.8-27B',
   'qwen/qwen3.8-27b-free',
@@ -138,6 +151,36 @@ function loadReasoningPreferences() {
   }
 }
 
+function loadWebSearchMode(): WebSearchMode {
+  const stored = window.localStorage.getItem(WEB_SEARCH_MODE_STORAGE_KEY)
+  return stored === 'on' || stored === 'off' ? stored : 'auto'
+}
+
+const WEB_SEARCH_MODE_PRESENTATION: Record<
+  WebSearchMode,
+  { label: string; badge: string; description: string }
+> = {
+  auto: { label: '자동', badge: 'A', description: '필요한 질문만 자동 검색' },
+  on: { label: '켜짐', badge: '+', description: '다음 메시지는 항상 웹 검색' },
+  off: { label: '꺼짐', badge: '−', description: '웹 검색을 사용하지 않음' },
+}
+
+function getNextWebSearchMode(mode: WebSearchMode): WebSearchMode {
+  if (mode === 'auto') return 'on'
+  if (mode === 'on') return 'off'
+  return 'auto'
+}
+
+function getSafeSourceUrl(value: unknown) {
+  if (typeof value !== 'string') return undefined
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function estimateTextTokens(content: string) {
   let asciiCharacters = 0
   let nonAsciiCharacters = 0
@@ -155,40 +198,6 @@ function estimateConversationTokens(messages: ChatMessage[]) {
     (total, message) => total + (message.tokenEstimate ?? estimateTextTokens(message.content)) + 4,
     2,
   )
-}
-
-function normalizeTokenUsage(value: unknown): TokenUsage | undefined {
-  if (typeof value !== 'object' || value === null) return undefined
-
-  const usage = value as {
-    prompt_tokens?: unknown
-    completion_tokens?: unknown
-    total_tokens?: unknown
-    reasoning_tokens?: unknown
-    completion_tokens_details?: { reasoning_tokens?: unknown }
-  }
-  if (
-    typeof usage.prompt_tokens !== 'number' ||
-    typeof usage.completion_tokens !== 'number' ||
-    typeof usage.total_tokens !== 'number'
-  ) {
-    return undefined
-  }
-
-  const detailedReasoningTokens = usage.completion_tokens_details?.reasoning_tokens
-  const reasoningTokens =
-    typeof detailedReasoningTokens === 'number'
-      ? detailedReasoningTokens
-      : typeof usage.reasoning_tokens === 'number'
-        ? usage.reasoning_tokens
-        : undefined
-
-  return {
-    promptTokens: usage.prompt_tokens,
-    completionTokens: usage.completion_tokens,
-    totalTokens: usage.total_tokens,
-    ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
-  }
 }
 
 function formatPerMillionPrice(price: number) {
@@ -310,7 +319,7 @@ function ModelPicker({
         onClick={() => onOpenChange(!open)}
         className={
           compact
-            ? `grid size-9 shrink-0 place-items-center rounded-[14px] border transition duration-200 ${
+            ? `flex h-10 w-full shrink-0 items-center gap-2 rounded-[14px] border p-1 pr-3 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#c8f2e0]/40 ${
                 open
                   ? 'border-[#c8f2e0]/40 bg-[#c8f2e0]/12 shadow-[0_0_0_1px_rgba(200,242,224,0.06),0_9px_24px_rgba(5,22,28,0.22)]'
                   : 'border-white/15 bg-white/[0.075] shadow-[inset_0_1px_0_rgba(255,255,255,0.1)] hover:border-white/25 hover:bg-white/[0.11]'
@@ -323,7 +332,17 @@ function ModelPicker({
         title={value}
       >
         {compact ? (
-          <Eye className="size-4 text-[#d9f7e9]" strokeWidth={1.6} />
+          <>
+            <span className="grid size-7 shrink-0 place-items-center rounded-full border border-[#c8f2e0]/20 bg-[#c8f2e0]/[0.08]">
+              <Eye className="size-3.5 text-[#d9f7e9]" strokeWidth={1.65} />
+            </span>
+            <span className="min-w-0 flex-1 truncate whitespace-nowrap text-[13px] font-semibold tracking-[-0.02em] text-white/78">
+              모델 선택
+            </span>
+            <ChevronDown
+              className={`size-3.5 shrink-0 text-white/35 transition-transform ${open ? 'rotate-180' : ''}`}
+            />
+          </>
         ) : (
           <>
             <span className="truncate text-[11px] font-semibold text-white/90 md:text-[13px]">
@@ -563,7 +582,15 @@ function EmptyState() {
   )
 }
 
-function MessageList({ messages, isThinking }: { messages: ChatMessage[]; isThinking: boolean }) {
+function MessageList({
+  messages,
+  isThinking,
+  pendingLabel,
+}: {
+  messages: ChatMessage[]
+  isThinking: boolean
+  pendingLabel?: string
+}) {
   return (
     <div className="mx-auto flex w-full max-w-[960px] flex-col gap-7 px-1 py-7 md:px-8 md:py-10">
       <AnimatePresence initial={false}>
@@ -584,10 +611,48 @@ function MessageList({ messages, isThinking }: { messages: ChatMessage[]; isThin
                 {message.content}
               </div>
             ) : (
-              <div className="markdown-response min-w-0 flex-1 py-1 text-[14px] text-white/88 md:text-[15px]">
-                <Suspense fallback={<p className="whitespace-pre-wrap">{message.content}</p>}>
-                  <MarkdownResponse content={message.content} />
-                </Suspense>
+              <div className="min-w-0 flex-1 py-1 text-[14px] text-white/88 md:text-[15px]">
+                <div className="markdown-response">
+                  <Suspense fallback={<p className="whitespace-pre-wrap">{message.content}</p>}>
+                    <MarkdownResponse content={message.content} />
+                  </Suspense>
+                </div>
+                {message.webSearchStatus === 'used' && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/10 pt-3 text-[10px] text-white/46">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-[#c8f2e0]/16 bg-[#c8f2e0]/[0.055] px-2.5 py-1 font-medium text-[#d8f4e8]/72">
+                      <Globe2 className="size-3" strokeWidth={1.7} />
+                      웹 검색 사용
+                    </span>
+                    {(Array.isArray(message.webSearchSources)
+                      ? message.webSearchSources
+                      : []
+                    ).map((source) => {
+                      const safeUrl = getSafeSourceUrl(source?.url)
+                      if (!safeUrl) return null
+                      const sourceTitle =
+                        typeof source.title === 'string' ? source.title : undefined
+                      const sourceDomain =
+                        typeof source.domain === 'string' ? source.domain : undefined
+                      return (
+                        <a
+                          key={safeUrl}
+                          href={safeUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="max-w-[220px] truncate rounded-full border border-white/10 bg-white/[0.035] px-2.5 py-1 text-white/52 transition hover:border-white/20 hover:text-white/78"
+                          title={sourceTitle || safeUrl}
+                        >
+                          {sourceTitle || sourceDomain || '출처'}
+                        </a>
+                      )
+                    })}
+                  </div>
+                )}
+                {message.webSearchWarning && (
+                  <p className="mt-3 border-l border-[#e8c98a]/35 pl-2.5 text-[10px] leading-5 text-[#f3ddb0]/60">
+                    {message.webSearchWarning}
+                  </p>
+                )}
               </div>
             )}
           </motion.article>
@@ -596,16 +661,23 @@ function MessageList({ messages, isThinking }: { messages: ChatMessage[]; isThin
       {isThinking && messages.at(-1)?.role !== 'assistant' && (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center gap-3">
           <MiraAvatar className="size-8 drop-shadow-[0_7px_14px_rgba(4,19,24,0.28)]" />
-          <div className="flex gap-1 px-1 py-3">
-            {[0, 1, 2].map((dot) => (
-              <motion.span
-                key={dot}
-                className="size-1.5 rounded-full bg-white/70"
-                animate={{ opacity: [0.25, 1, 0.25], y: [0, -2, 0] }}
-                transition={{ duration: 1, repeat: Infinity, delay: dot * 0.14 }}
-              />
-            ))}
-          </div>
+          {pendingLabel ? (
+            <div className="inline-flex items-center gap-2 px-1 py-2.5 text-[11px] text-white/52">
+              <Globe2 className="size-3.5 animate-pulse text-[#c8f2e0]/75" strokeWidth={1.6} />
+              {pendingLabel}
+            </div>
+          ) : (
+            <div className="flex gap-1 px-1 py-3">
+              {[0, 1, 2].map((dot) => (
+                <motion.span
+                  key={dot}
+                  className="size-1.5 rounded-full bg-white/70"
+                  animate={{ opacity: [0.25, 1, 0.25], y: [0, -2, 0] }}
+                  transition={{ duration: 1, repeat: Infinity, delay: dot * 0.14 }}
+                />
+              ))}
+            </div>
+          )}
         </motion.div>
       )}
     </div>
@@ -629,9 +701,13 @@ export default function App() {
   const [reasoningPreferences, setReasoningPreferences] = useState<Record<string, boolean>>(
     loadReasoningPreferences,
   )
+  const [webSearchMode, setWebSearchMode] = useState<WebSearchMode>(loadWebSearchMode)
+  const [pendingLabel, setPendingLabel] = useState<string>()
   const [openModelPicker, setOpenModelPicker] = useState<'header' | 'composer' | null>(null)
+  const [composerToolsOpen, setComposerToolsOpen] = useState(false)
   const [isThinking, setIsThinking] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const composerToolsRef = useRef<HTMLDivElement>(null)
   const messagesViewportRef = useRef<HTMLDivElement>(null)
   const messagesContentRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
@@ -715,11 +791,25 @@ export default function App() {
       if (event.key === 'Escape') {
         setSidebarOpen(false)
         setOpenModelPicker(null)
+        setComposerToolsOpen(false)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
+
+  useEffect(() => {
+    if (!composerToolsOpen) return
+
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (composerToolsRef.current?.contains(event.target as Node)) return
+      setComposerToolsOpen(false)
+      setOpenModelPicker((current) => (current === 'composer' ? null : current))
+    }
+
+    document.addEventListener('pointerdown', closeOnPointerDown)
+    return () => document.removeEventListener('pointerdown', closeOnPointerDown)
+  }, [composerToolsOpen])
 
   useEffect(() => () => requestControllerRef.current?.abort(), [])
 
@@ -737,6 +827,10 @@ export default function App() {
       JSON.stringify(reasoningPreferences),
     )
   }, [reasoningPreferences])
+
+  useEffect(() => {
+    window.localStorage.setItem(WEB_SEARCH_MODE_STORAGE_KEY, webSearchMode)
+  }, [webSearchMode])
 
   useEffect(() => {
     if (!workspaceOpen || !stickToBottomRef.current) return
@@ -822,6 +916,9 @@ export default function App() {
     setMessages([])
     setDraft('')
     setIsThinking(false)
+    setPendingLabel(undefined)
+    setComposerToolsOpen(false)
+    setOpenModelPicker(null)
     stickToBottomRef.current = true
     setSidebarOpen(false)
     window.setTimeout(() => textareaRef.current?.focus(), 0)
@@ -837,6 +934,9 @@ export default function App() {
     setMessages(conversation.messages)
     setDraft('')
     setIsThinking(false)
+    setPendingLabel(undefined)
+    setComposerToolsOpen(false)
+    setOpenModelPicker(null)
     stickToBottomRef.current = true
     setSidebarOpen(false)
     setWorkspaceOpen(true)
@@ -855,6 +955,9 @@ export default function App() {
       setMessages([])
       setDraft('')
       setIsThinking(false)
+      setPendingLabel(undefined)
+      setComposerToolsOpen(false)
+      setOpenModelPicker(null)
     }
   }
 
@@ -868,6 +971,7 @@ export default function App() {
       modelMetadata[requestModel]?.capabilities.reasoningControl,
     )
     const requestReasoningEnabled = requestSupportsReasoning ? reasoningEnabled : false
+    const requestWebSearchMode = webSearchMode
     const messageId = Date.now()
     const assistantId = messageId + 1
     const userMessage: ChatMessage = {
@@ -875,6 +979,7 @@ export default function App() {
       role: 'user',
       content,
       tokenEstimate: estimateTextTokens(content),
+      webSearchMode: requestWebSearchMode,
     }
     const requestMessages = [...messages, userMessage]
     const conversationId = activeConversationId ?? crypto.randomUUID()
@@ -884,6 +989,15 @@ export default function App() {
     setMessages(requestMessages)
     setDraft('')
     setIsThinking(true)
+    setComposerToolsOpen(false)
+    setOpenModelPicker(null)
+    setPendingLabel(
+      requestWebSearchMode === 'on'
+        ? '웹에서 검색 중…'
+        : requestWebSearchMode === 'auto'
+          ? '검색 필요 여부를 확인 중…'
+          : undefined,
+    )
 
     const controller = new AbortController()
     requestControllerRef.current = controller
@@ -892,6 +1006,7 @@ export default function App() {
     let assistantAsciiCharacters = 0
     let assistantNonAsciiCharacters = 0
     let assistantUsage: TokenUsage | undefined
+    let assistantWebSearchMeta: MiraWebSearchMetadata | undefined
     let renderFrame = 0
 
     const renderAssistantContent = () => {
@@ -908,6 +1023,10 @@ export default function App() {
               model: requestModel,
               usage: assistantUsage,
               tokenEstimate: assistantTokenEstimate,
+              webSearchMode: requestWebSearchMode,
+              webSearchStatus: assistantWebSearchMeta?.status,
+              webSearchSources: assistantWebSearchMeta?.sources,
+              webSearchWarning: assistantWebSearchMeta?.warning,
             },
           ]
         }
@@ -919,6 +1038,10 @@ export default function App() {
                 model: requestModel,
                 usage: assistantUsage,
                 tokenEstimate: assistantTokenEstimate,
+                webSearchMode: requestWebSearchMode,
+                webSearchStatus: assistantWebSearchMeta?.status,
+                webSearchSources: assistantWebSearchMeta?.sources,
+                webSearchWarning: assistantWebSearchMeta?.warning,
               }
             : message,
         )
@@ -926,6 +1049,7 @@ export default function App() {
     }
 
     const appendAssistantContent = (contentDelta: string) => {
+      setPendingLabel(undefined)
       assistantContent += contentDelta
       for (const character of contentDelta) {
         if (character.codePointAt(0)! <= 0x7f) assistantAsciiCharacters += 1
@@ -948,11 +1072,14 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: requestModel,
-          messages: requestMessages.map(({ role, content: messageContent }) => ({
+          messages: requestMessages.map(({ role, content: messageContent, webSearchMode: sentMode, webSearchStatus }) => ({
             role,
             content: messageContent,
+            ...(sentMode ? { webSearchMode: sentMode } : {}),
+            ...(webSearchStatus ? { webSearchStatus } : {}),
           })),
           reasoningEnabled: requestSupportsReasoning ? requestReasoningEnabled : undefined,
+          webSearchMode: requestWebSearchMode,
         }),
         signal: controller.signal,
       })
@@ -963,86 +1090,24 @@ export default function App() {
       }
       if (!response.body) throw new Error('스트리밍 응답을 읽을 수 없습니다.')
 
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      let streamFinished = false
-      let eventDataLines: string[] = []
-
-      const consumeEventData = (data: string) => {
-        if (data === '[DONE]') {
-          streamFinished = true
-          return
-        }
-        if (!data) return
-
-        const streamEvent = JSON.parse(data) as {
-          error?:
-            | string
-            | {
-                code?: number | string
-                message?: string
-                type?: string
-              }
-          choices?: Array<{
-            delta?: {
-              content?: string
-              reasoning?: string
-              reasoning_content?: string
-            }
-            finish_reason?: string | null
-          }>
-          usage?: unknown
-        }
-        if (streamEvent.error) {
-          const errorMessage =
-            typeof streamEvent.error === 'string'
-              ? streamEvent.error
-              : streamEvent.error.message ?? '스트리밍 응답 중 오류가 발생했습니다.'
-          throw new Error(errorMessage)
-        }
-        if (streamEvent.choices?.[0]?.finish_reason === 'error') {
-          throw new Error('스트리밍 응답 중 오류가 발생했습니다.')
-        }
-        const usage = normalizeTokenUsage(streamEvent.usage)
-        if (usage) assistantUsage = usage
-        const contentDelta = streamEvent.choices?.[0]?.delta?.content
-        if (typeof contentDelta === 'string' && contentDelta) appendAssistantContent(contentDelta)
-      }
-
-      const flushEvent = () => {
-        if (!eventDataLines.length) return
-        const data = eventDataLines.join('\n').trim()
-        eventDataLines = []
-        if (data) consumeEventData(data)
-      }
-
-      const consumeLine = (line: string) => {
-        if (line === '') {
-          flushEvent()
-          return
-        }
-        if (line.startsWith(':')) return
-        if (!line.startsWith('data:')) return
-
-        const value = line.slice(5)
-        eventDataLines.push(value.startsWith(' ') ? value.slice(1) : value)
-      }
-
-      while (!streamFinished) {
-        const { done, value } = await reader.read()
-        buffer += decoder.decode(value, { stream: !done })
-
-        const lines = buffer.split(/\r?\n/)
-        buffer = lines.pop() ?? ''
-        for (const line of lines) consumeLine(line)
-
-        if (done) {
-          if (buffer) consumeLine(buffer)
-          flushEvent()
-          break
-        }
-      }
+      await consumeChatStream(response.body, {
+        onMeta(metadata) {
+          assistantWebSearchMeta = metadata
+          setPendingLabel(metadata.status === 'used' ? '웹에서 검색 중…' : undefined)
+          if (assistantContent) renderAssistantContent()
+        },
+        onUsage(usage) {
+          assistantUsage = {
+            promptTokens: usage.inputTokens,
+            completionTokens: usage.outputTokens,
+            totalTokens: usage.totalTokens,
+            ...(usage.reasoningTokens === undefined
+              ? {}
+              : { reasoningTokens: usage.reasoningTokens }),
+          }
+        },
+        onContent: appendAssistantContent,
+      })
 
       flushAssistantContent()
       if (!assistantContent.trim()) throw new Error('모델이 빈 응답을 반환했습니다.')
@@ -1062,6 +1127,10 @@ export default function App() {
             content: `오류: ${errorMessage}`,
             model: requestModel,
             tokenEstimate: estimateTextTokens(errorMessage) + 3,
+            webSearchMode: requestWebSearchMode,
+            webSearchStatus: assistantWebSearchMeta?.status,
+            webSearchSources: assistantWebSearchMeta?.sources,
+            webSearchWarning: assistantWebSearchMeta?.warning,
           },
         ]
       })
@@ -1069,6 +1138,7 @@ export default function App() {
       if (renderFrame) window.cancelAnimationFrame(renderFrame)
       if (requestControllerRef.current === controller) requestControllerRef.current = null
       setIsThinking(false)
+      setPendingLabel(undefined)
     }
   }
 
@@ -1174,7 +1244,11 @@ export default function App() {
                   <button
                     className="icon-button lg:hidden"
                     type="button"
-                    onClick={() => setSidebarOpen(true)}
+                    onClick={() => {
+                      setSidebarOpen(true)
+                      setComposerToolsOpen(false)
+                      setOpenModelPicker(null)
+                    }}
                     aria-label="사이드바 열기"
                   >
                     <Menu className="size-[18px]" />
@@ -1185,7 +1259,10 @@ export default function App() {
                       models={availableModels}
                       onChange={setModelName}
                       open={openModelPicker === 'header'}
-                      onOpenChange={(open) => setOpenModelPicker(open ? 'header' : null)}
+                      onOpenChange={(open) => {
+                        setOpenModelPicker(open ? 'header' : null)
+                        if (open) setComposerToolsOpen(false)
+                      }}
                     />
                     <div className="mt-0.5 flex items-center gap-1.5 text-[9px] text-white/38">
                       <span
@@ -1207,6 +1284,7 @@ export default function App() {
                     setWorkspaceOpen(false)
                     setSidebarOpen(false)
                     setOpenModelPicker(null)
+                    setComposerToolsOpen(false)
                   }}
                   aria-label="채팅 닫기"
                 >
@@ -1231,7 +1309,11 @@ export default function App() {
                   {messages.length === 0 ? (
                     <EmptyState />
                   ) : (
-                    <MessageList messages={messages} isThinking={isThinking} />
+                    <MessageList
+                      messages={messages}
+                      isThinking={isThinking}
+                      pendingLabel={pendingLabel}
+                    />
                   )}
                 </div>
               </div>
@@ -1299,44 +1381,141 @@ export default function App() {
                     transition={{ duration: prefersReducedMotion ? 0 : 0.18 }}
                     className="flex h-9 shrink-0 items-center justify-between gap-2 px-1"
                   >
-                    <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                      <ModelPicker
-                        compact
-                        placement="above"
-                        value={modelName}
-                        models={availableModels}
-                        onChange={setModelName}
-                        open={openModelPicker === 'composer'}
-                        onOpenChange={(open) => setOpenModelPicker(open ? 'composer' : null)}
-                      />
-                      {supportsReasoning && (
+                    <div className="flex min-w-0 flex-1 items-center gap-2">
+                      <div ref={composerToolsRef} className="relative shrink-0">
                         <button
                           type="button"
                           onMouseDown={(event) => event.preventDefault()}
-                          onClick={() =>
-                            setReasoningPreferences((current) => ({
-                              ...current,
-                              [modelName]: !reasoningEnabled,
-                            }))
-                          }
-                          disabled={isThinking}
-                          aria-pressed={reasoningEnabled}
-                          aria-label={`추론 모드 ${reasoningEnabled ? '끄기' : '켜기'}`}
-                          title={`추론 모드: ${reasoningEnabled ? '켜짐' : '꺼짐'} · 추론 토큰은 출력 요금에 포함됩니다`}
-                          className={`relative grid size-9 shrink-0 place-items-center rounded-[14px] border transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                            reasoningEnabled
-                              ? 'border-[#c8f2e0]/28 bg-[#c8f2e0]/10 text-[#d9f7e9] shadow-[inset_0_1px_0_rgba(255,255,255,0.09)]'
-                              : 'border-white/10 bg-white/[0.045] text-white/38 hover:border-white/18 hover:text-white/68'
+                          onClick={() => {
+                            setOpenModelPicker(null)
+                            setComposerToolsOpen((current) => !current)
+                          }}
+                          aria-haspopup="true"
+                          aria-expanded={composerToolsOpen}
+                          aria-controls="composer-tools-menu"
+                          aria-label={composerToolsOpen ? '채팅 도구 닫기' : '채팅 도구 열기'}
+                          title={composerToolsOpen ? '채팅 도구 닫기' : '채팅 도구 열기'}
+                          className={`grid size-9 shrink-0 place-items-center rounded-full border transition duration-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#c8f2e0]/40 ${
+                            composerToolsOpen
+                              ? 'border-[#c8f2e0]/38 bg-[#c8f2e0]/14 text-[#e2faf0] shadow-[0_8px_22px_rgba(4,20,25,0.2)]'
+                              : 'border-white/15 bg-white/[0.075] text-white/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.1)] hover:border-white/25 hover:bg-white/[0.11] hover:text-white'
                           }`}
                         >
-                          <BrainCircuit className="size-4" strokeWidth={1.6} />
-                          <span
-                            className={`absolute right-1.5 top-1.5 size-1 rounded-full ${
-                              reasoningEnabled ? 'bg-[#c8f2e0]' : 'bg-white/20'
-                            }`}
+                          <Plus
+                            className={`size-[17px] transition-transform duration-200 ${composerToolsOpen ? 'rotate-45' : ''}`}
+                            strokeWidth={1.8}
                           />
                         </button>
-                      )}
+
+                        <AnimatePresence>
+                          {composerToolsOpen && (
+                            <motion.div
+                              id="composer-tools-menu"
+                              initial={{ opacity: 0, y: 6, scale: 0.98 }}
+                              animate={{ opacity: 1, y: 0, scale: 1 }}
+                              exit={{ opacity: 0, y: 6, scale: 0.98 }}
+                              transition={{ duration: prefersReducedMotion ? 0 : 0.16 }}
+                              role="group"
+                              aria-label="채팅 도구"
+                              className="composer-tools-menu absolute bottom-[calc(100%+10px)] left-0 z-[70] w-[220px] space-y-1.5 rounded-[19px] p-2"
+                            >
+                              <ModelPicker
+                                compact
+                                placement="above"
+                                value={modelName}
+                                models={availableModels}
+                                onChange={(model) => {
+                                  setModelName(model)
+                                  setComposerToolsOpen(false)
+                                }}
+                                open={openModelPicker === 'composer'}
+                                onOpenChange={(open) =>
+                                  setOpenModelPicker(open ? 'composer' : null)
+                                }
+                              />
+                              <button
+                                type="button"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => {
+                                  setReasoningPreferences((current) => ({
+                                    ...current,
+                                    [modelName]: !reasoningEnabled,
+                                  }))
+                                }}
+                                disabled={isThinking || !supportsReasoning}
+                                aria-pressed={supportsReasoning ? reasoningEnabled : undefined}
+                                aria-label={
+                                  supportsReasoning
+                                    ? `심화 추론 ${reasoningEnabled ? '끄기' : '켜기'}`
+                                    : '심화 추론을 지원하지 않는 모델'
+                                }
+                                title={
+                                  supportsReasoning
+                                    ? `심화 추론: ${reasoningEnabled ? '켜짐' : '꺼짐'} · 추론 토큰은 출력 요금에 포함됩니다`
+                                    : '현재 모델은 심화 추론 제어를 지원하지 않습니다'
+                                }
+                                className={`flex h-10 w-full items-center gap-2 rounded-[14px] border p-1 pr-3 text-left transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#c8f2e0]/40 disabled:cursor-not-allowed disabled:opacity-35 ${
+                                  reasoningEnabled
+                                    ? 'border-[#c8f2e0]/28 bg-[#c8f2e0]/10 text-[#d9f7e9]'
+                                    : 'border-white/10 bg-white/[0.045] text-white/58 hover:border-white/18 hover:bg-white/[0.07] hover:text-white/82'
+                                }`}
+                              >
+                                <span className="relative grid size-7 shrink-0 place-items-center rounded-full border border-current/15 bg-white/[0.035]">
+                                  <BrainCircuit className="size-3.5" strokeWidth={1.65} />
+                                  <span
+                                    className={`absolute right-0.5 top-0.5 size-1 rounded-full ${
+                                      reasoningEnabled ? 'bg-[#c8f2e0]' : 'bg-white/20'
+                                    }`}
+                                  />
+                                </span>
+                                <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-[-0.02em]">
+                                  심화 추론
+                                </span>
+                                <span className="text-[10px] font-semibold text-current/55">
+                                  {supportsReasoning ? (reasoningEnabled ? 'ON' : 'OFF') : '미지원'}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => {
+                                  setWebSearchMode((current) => getNextWebSearchMode(current))
+                                }}
+                                disabled={isThinking}
+                                aria-label={`웹 검색: ${WEB_SEARCH_MODE_PRESENTATION[webSearchMode].label}. ${WEB_SEARCH_MODE_PRESENTATION[webSearchMode].description}`}
+                                title={`웹 검색: ${WEB_SEARCH_MODE_PRESENTATION[webSearchMode].label} · 클릭하여 변경`}
+                                className={`flex h-10 w-full items-center gap-2 rounded-[14px] border p-1 pr-3 text-left transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#c8f2e0]/40 disabled:cursor-not-allowed disabled:opacity-40 ${
+                                  webSearchMode === 'on'
+                                    ? 'border-[#c8f2e0]/34 bg-[#c8f2e0]/12 text-[#d9f7e9]'
+                                    : webSearchMode === 'off'
+                                      ? 'border-white/8 bg-white/[0.025] text-white/38 hover:border-white/15 hover:text-white/58'
+                                      : 'border-white/12 bg-white/[0.055] text-white/62 hover:border-white/20 hover:bg-white/[0.075] hover:text-white/82'
+                                }`}
+                              >
+                                <span className="relative grid size-7 shrink-0 place-items-center rounded-full border border-current/15 bg-white/[0.035]">
+                                  <Globe2 className="size-3.5" strokeWidth={1.6} />
+                                  <span
+                                    aria-hidden="true"
+                                    className={`absolute -right-0.5 -top-0.5 grid min-w-3.5 place-items-center rounded-full border px-0.5 text-[7px] font-bold leading-3 ${
+                                      webSearchMode === 'on'
+                                        ? 'border-[#d8f4e8]/25 bg-[#c8f2e0] text-[#16353a]'
+                                        : 'border-white/12 bg-[#29484d] text-white/62'
+                                    }`}
+                                  >
+                                    {WEB_SEARCH_MODE_PRESENTATION[webSearchMode].badge}
+                                  </span>
+                                </span>
+                                <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-[-0.02em]">
+                                  웹 서치
+                                </span>
+                                <span className="text-[10px] font-semibold text-current/55">
+                                  {WEB_SEARCH_MODE_PRESENTATION[webSearchMode].label}
+                                </span>
+                              </button>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
                       <p
                         className="min-w-0 truncate px-1 text-[12px] font-semibold tracking-[-0.015em] text-white/75"
                         title={`${modelName} 요금: ${pricingLabel}`}

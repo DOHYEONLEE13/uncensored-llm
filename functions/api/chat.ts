@@ -6,11 +6,20 @@ import {
   type AiModel,
   type ProviderId,
 } from '../_modelCatalog'
+import {
+  buildWebSearchContext,
+  buildWebSearchQuery,
+  createWebSearchMetaEvent,
+  isRetryableIntegratedWebSearchFailure,
+  isWebSearchStatus,
+  parseWebSearchMode,
+  resolveWebSearch,
+  searchNanoGptWeb,
+  type WebSearchMessage,
+  type WebSearchMeta,
+} from '../_webSearch'
 
-type ChatMessage = {
-  role: 'user' | 'assistant'
-  content: string
-}
+type ChatMessage = WebSearchMessage
 
 type AiEnv = {
   ORCAROUTER_API_KEY?: string
@@ -135,9 +144,19 @@ function isValidMessages(value: unknown): value is ChatMessage[] {
         'role' in message &&
         (message.role === 'user' || message.role === 'assistant') &&
         'content' in message &&
-        typeof message.content === 'string',
+        typeof message.content === 'string' &&
+        (!('webSearchMode' in message) ||
+          message.webSearchMode === undefined ||
+          parseWebSearchMode(message.webSearchMode) !== undefined) &&
+        (!('webSearchStatus' in message) ||
+          message.webSearchStatus === undefined ||
+          isWebSearchStatus(message.webSearchStatus)),
     )
   )
+}
+
+function toUpstreamMessages(messages: ChatMessage[]) {
+  return messages.map(({ role, content }) => ({ role, content }))
 }
 
 function getMessageLimitError(messages: ChatMessage[]) {
@@ -177,6 +196,107 @@ function parseUpstreamError(text: string, provider: ProviderConfig) {
   }
 }
 
+function getWebSearchFallbackWarning() {
+  return '웹 검색에 연결하지 못해 현재 모델 지식 기준으로 답변합니다.'
+}
+
+function getMissingNanoGptSearchWarning() {
+  return 'NanoGPT 웹 검색이 설정되지 않아 현재 모델 지식 기준으로 답변합니다.'
+}
+
+function prependSseEvent(
+  upstreamBody: ReadableStream<Uint8Array>,
+  event: string,
+  signal: AbortSignal,
+) {
+  const reader = upstreamBody.getReader()
+  const prefix = new TextEncoder().encode(event)
+  let prefixSent = false
+  let settled = false
+  let abortHandler: (() => void) | undefined
+
+  const cleanup = () => {
+    if (settled) return
+    settled = true
+    if (abortHandler) signal.removeEventListener('abort', abortHandler)
+  }
+
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      abortHandler = () => {
+        cleanup()
+        void reader.cancel(signal.reason).finally(() => controller.error(signal.reason))
+      }
+      if (signal.aborted) {
+        abortHandler()
+      } else {
+        signal.addEventListener('abort', abortHandler, { once: true })
+      }
+    },
+    async pull(controller) {
+      if (!prefixSent) {
+        prefixSent = true
+        controller.enqueue(prefix)
+        return
+      }
+
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          cleanup()
+          controller.close()
+          return
+        }
+        controller.enqueue(value)
+      } catch (error) {
+        cleanup()
+        controller.error(error)
+      }
+    },
+    async cancel(reason) {
+      cleanup()
+      await reader.cancel(reason)
+    },
+  })
+}
+
+async function fetchChatCompletion(
+  provider: ProviderConfig,
+  apiKey: string,
+  body: Record<string, unknown>,
+  signal: AbortSignal,
+) {
+  return fetch(provider.chatUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify(body),
+    signal,
+  })
+}
+
+function upstreamErrorResponse(
+  upstream: Response,
+  error: ReturnType<typeof parseUpstreamError>,
+  provider: ProviderConfig,
+) {
+  const requestId = upstream.headers.get('x-request-id')
+  return json(
+    {
+      error: error.message,
+      type: error.type,
+      code: error.code,
+      status: upstream.status,
+      provider: provider.id,
+    },
+    upstream.status || 502,
+    requestId ? { 'X-Request-ID': requestId } : undefined,
+  )
+}
+
 export async function onRequest({ request, env }: PagesContext) {
   if (request.method !== 'POST') {
     return json({ error: 'Method not allowed' }, 405)
@@ -207,6 +327,21 @@ export async function onRequest({ request, env }: PagesContext) {
   const messageLimitError = getMessageLimitError(messages)
   if (messageLimitError) {
     return json({ error: messageLimitError, type: 'request_too_large' }, 413)
+  }
+
+  const webSearchMode = parseWebSearchMode(
+    typeof payload === 'object' && payload !== null && 'webSearchMode' in payload
+      ? payload.webSearchMode
+      : undefined,
+  )
+  if (!webSearchMode) {
+    return json(
+      {
+        error: 'webSearchMode는 auto, on, off 중 하나여야 합니다.',
+        type: 'invalid_request',
+      },
+      400,
+    )
   }
 
   const requestedModel =
@@ -245,9 +380,55 @@ export async function onRequest({ request, env }: PagesContext) {
   }
 
   try {
+    const nanoGptApiKey = getProviderApiKey(env, PROVIDERS.nanogpt)
+    const resolution = await resolveWebSearch({
+      mode: webSearchMode,
+      messages,
+      nanoGptApiKey,
+      signal: request.signal,
+    })
+
+    let upstreamMessages = toUpstreamMessages(messages)
+    let integratedNanoGptSearch = false
+    const webSearchMeta: WebSearchMeta = {
+      mode: webSearchMode,
+      status: resolution.useWebSearch ? 'used' : 'not-used',
+      reason: resolution.reason,
+      ...(resolution.warning ? { warning: resolution.warning } : {}),
+    }
+
+    if (resolution.useWebSearch) {
+      if (provider.id === 'nanogpt') {
+        integratedNanoGptSearch = true
+      } else if (!nanoGptApiKey) {
+        webSearchMeta.status = 'fallback'
+        webSearchMeta.warning = getMissingNanoGptSearchWarning()
+      } else {
+        try {
+          const search = await searchNanoGptWeb({
+            query: buildWebSearchQuery(messages),
+            nanoGptApiKey,
+            signal: request.signal,
+          })
+          if (search.results.length === 0) {
+            webSearchMeta.status = 'fallback'
+            webSearchMeta.warning =
+              '웹 검색 결과를 찾지 못해 현재 모델 지식 기준으로 답변합니다.'
+          } else {
+            upstreamMessages = buildWebSearchContext(messages, search.results)
+            webSearchMeta.sources = search.sources
+          }
+        } catch (error) {
+          if (request.signal.aborted) throw error
+          webSearchMeta.status = 'fallback'
+          webSearchMeta.warning = getWebSearchFallbackWarning()
+        }
+      }
+    }
+
     const upstreamBody: Record<string, unknown> = {
       model: requestedModel,
-      messages,
+      messages: upstreamMessages,
       stream: true,
       max_tokens: Math.min(
         MODEL_CATALOG[requestedModel].maxOutputTokens ?? MAX_COMPLETION_TOKENS,
@@ -259,33 +440,34 @@ export async function onRequest({ request, env }: PagesContext) {
       if (MODEL_CATALOG[requestedModel].capabilities.reasoning && reasoningEnabled !== undefined) {
         upstreamBody.reasoning_effort = reasoningEnabled ? 'medium' : 'none'
       }
+      if (integratedNanoGptSearch) {
+        upstreamBody.webSearch = {
+          enabled: true,
+          provider: 'linkup',
+          depth: 'standard',
+        }
+      }
     }
 
-    const upstream = await fetch(provider.chatUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-      },
-      body: JSON.stringify(upstreamBody),
-      signal: request.signal,
-    })
+    let upstream = await fetchChatCompletion(provider, apiKey, upstreamBody, request.signal)
 
     if (!upstream.ok) {
       const error = parseUpstreamError(await upstream.text(), provider)
-      const requestId = upstream.headers.get('x-request-id')
-      return json(
-        {
-          error: error.message,
-          type: error.type,
-          code: error.code,
-          status: upstream.status,
-          provider: provider.id,
-        },
-        upstream.status,
-        requestId ? { 'X-Request-ID': requestId } : undefined,
-      )
+      if (
+        !integratedNanoGptSearch ||
+        !isRetryableIntegratedWebSearchFailure(upstream.status, error)
+      ) {
+        return upstreamErrorResponse(upstream, error, provider)
+      }
+
+      delete upstreamBody.webSearch
+      webSearchMeta.status = 'fallback'
+      webSearchMeta.warning = getWebSearchFallbackWarning()
+      upstream = await fetchChatCompletion(provider, apiKey, upstreamBody, request.signal)
+      if (!upstream.ok) {
+        const fallbackError = parseUpstreamError(await upstream.text(), provider)
+        return upstreamErrorResponse(upstream, fallbackError, provider)
+      }
     }
 
     if (!upstream.body) {
@@ -309,7 +491,13 @@ export async function onRequest({ request, env }: PagesContext) {
     const requestId = upstream.headers.get('x-request-id')
     if (requestId) headers['X-Request-ID'] = requestId
 
-    return new Response(upstream.body, {
+    const responseBody = prependSseEvent(
+      upstream.body,
+      createWebSearchMetaEvent(webSearchMeta),
+      request.signal,
+    )
+
+    return new Response(responseBody, {
       status: 200,
       headers,
     })

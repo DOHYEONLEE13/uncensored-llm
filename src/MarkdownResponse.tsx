@@ -13,6 +13,16 @@ const closedMermaidFence =
 const MAX_RENDERED_DIAGRAMS = 3
 const MAX_TOTAL_DIAGRAM_BYTES = 24 * 1024
 
+function isSafeExternalUrl(value: string | undefined) {
+  if (!value) return false
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 function splitMermaidBlocks(content: string): MarkdownSegment[] {
   const segments: MarkdownSegment[] = []
   const encoder = new TextEncoder()
@@ -52,7 +62,20 @@ export default function MarkdownResponse({ content }: { content: string }) {
     segment.type === 'mermaid' ? (
       <MermaidDiagram key={`mermaid-${index}`} source={segment.content} />
     ) : (
-      <ReactMarkdown key={`markdown-${index}`} remarkPlugins={[remarkGfm, remarkBreaks]}>
+      <ReactMarkdown
+        key={`markdown-${index}`}
+        remarkPlugins={[remarkGfm, remarkBreaks]}
+        components={{
+          a: ({ href, children, node: _node, ...props }) =>
+            isSafeExternalUrl(href) ? (
+              <a {...props} href={href} target="_blank" rel="noopener noreferrer">
+                {children}
+              </a>
+            ) : (
+              <span>{children}</span>
+            ),
+        }}
+      >
         {segment.content}
       </ReactMarkdown>
     ),

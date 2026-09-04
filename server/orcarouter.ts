@@ -9,6 +9,17 @@ import {
   type AiModel,
   type ProviderId,
 } from './modelCatalog.js'
+import {
+  buildWebSearchContext,
+  buildWebSearchQuery,
+  createWebSearchMetaEvent,
+  isRetryableIntegratedWebSearchFailure,
+  parseWebSearchMode,
+  resolveWebSearch,
+  searchNanoGptWeb,
+  type WebSearchMessage,
+  type WebSearchStatus,
+} from './webSearch.js'
 
 export {
   AI_MODELS,
@@ -18,10 +29,7 @@ export {
   ORCAROUTER_MODELS,
 } from './modelCatalog.js'
 
-type ChatMessage = {
-  role: 'user' | 'assistant'
-  content: string
-}
+type ChatMessage = WebSearchMessage
 
 type ProviderConfig = {
   id: ProviderId
@@ -130,15 +138,36 @@ function isValidMessages(value: unknown): value is ChatMessage[] {
   return (
     Array.isArray(value) &&
     value.length > 0 &&
-    value.every(
-      (message) =>
-        typeof message === 'object' &&
-        message !== null &&
-        'role' in message &&
-        (message.role === 'user' || message.role === 'assistant') &&
-        'content' in message &&
-        typeof message.content === 'string',
-    )
+    value.every((message) => {
+      if (
+        typeof message !== 'object' ||
+        message === null ||
+        !('role' in message) ||
+        (message.role !== 'user' && message.role !== 'assistant') ||
+        !('content' in message) ||
+        typeof message.content !== 'string'
+      ) {
+        return false
+      }
+
+      const metadata = message as {
+        webSearchMode?: unknown
+        webSearchStatus?: unknown
+      }
+      const validMode =
+        metadata.webSearchMode === undefined ||
+        metadata.webSearchMode === 'auto' ||
+        metadata.webSearchMode === 'on' ||
+        metadata.webSearchMode === 'off'
+      const validStatus =
+        metadata.webSearchStatus === undefined ||
+        metadata.webSearchStatus === 'used' ||
+        metadata.webSearchStatus === 'not-used' ||
+        metadata.webSearchStatus === 'fallback' ||
+        metadata.webSearchStatus === 'unused' ||
+        metadata.webSearchStatus === 'failed'
+      return validMode && validStatus
+    })
   )
 }
 
@@ -232,6 +261,19 @@ export async function handleOrcaRouterChat(request: IncomingMessage, response: S
     return
   }
 
+  const requestedWebSearchMode =
+    typeof payload === 'object' && payload !== null && 'webSearchMode' in payload
+      ? payload.webSearchMode
+      : undefined
+  const webSearchMode = parseWebSearchMode(requestedWebSearchMode)
+  if (webSearchMode === undefined) {
+    sendJson(response, 400, {
+      error: 'webSearchMode는 auto, on, off 중 하나여야 합니다.',
+      type: 'invalid_request',
+    })
+    return
+  }
+
   const provider = getProviderForModel(requestedModel)
   const apiKey = getProviderApiKey(provider)
   if (!apiKey) {
@@ -246,37 +288,104 @@ export async function handleOrcaRouterChat(request: IncomingMessage, response: S
   const controller = new AbortController()
   const abortUpstream = () => controller.abort()
   request.once('aborted', abortUpstream)
+  response.once('close', abortUpstream)
 
   try {
-    const upstreamBody: Record<string, unknown> = {
-      model: requestedModel,
+    const nanoGptApiKey = getProviderApiKey(PROVIDERS.nanogpt)
+    const resolution = await resolveWebSearch({
+      mode: webSearchMode,
       messages,
-      stream: true,
-      max_tokens: Math.min(
-        MODEL_CATALOG[requestedModel].maxOutputTokens ?? MAX_COMPLETION_TOKENS,
-        MAX_COMPLETION_TOKENS,
-      ),
-    }
-    if (provider.id === 'nanogpt') {
-      upstreamBody.stream_options = { include_usage: true }
-      if (MODEL_CATALOG[requestedModel].capabilities.reasoning && reasoningEnabled !== undefined) {
-        upstreamBody.reasoning_effort = reasoningEnabled ? 'medium' : 'none'
+      nanoGptApiKey,
+      signal: controller.signal,
+    })
+    let upstreamMessages = messages.map(({ role, content }) => ({ role, content }))
+    let webSearchStatus: WebSearchStatus = resolution.useWebSearch ? 'used' : 'not-used'
+    let webSearchSources: Awaited<ReturnType<typeof searchNanoGptWeb>>['sources'] | undefined
+    let webSearchWarning = resolution.warning
+
+    if (resolution.useWebSearch && provider.id !== 'nanogpt') {
+      if (!nanoGptApiKey) {
+        webSearchStatus = 'fallback'
+        webSearchWarning =
+          '웹 검색을 사용할 수 없어 현재 모델의 기본 지식으로 답변합니다.'
+      } else {
+        try {
+          const directSearch = await searchNanoGptWeb({
+            query: buildWebSearchQuery(messages),
+            nanoGptApiKey,
+            signal: controller.signal,
+          })
+          upstreamMessages = buildWebSearchContext(messages, directSearch.results)
+          webSearchSources = directSearch.sources
+        } catch (error) {
+          if (controller.signal.aborted) throw error
+          webSearchStatus = 'fallback'
+          webSearchSources = undefined
+          webSearchWarning =
+            '웹 검색에 연결하지 못해 현재 모델의 기본 지식으로 답변합니다.'
+        }
       }
     }
 
-    const upstream = await fetch(provider.chatUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-      },
-      body: JSON.stringify(upstreamBody),
-      signal: controller.signal,
-    })
+    const integratedWebSearch = resolution.useWebSearch && provider.id === 'nanogpt'
+    const createUpstreamBody = (webSearchEnabled: boolean) => {
+      const upstreamBody: Record<string, unknown> = {
+        model: requestedModel,
+        messages: upstreamMessages,
+        stream: true,
+        max_tokens: Math.min(
+          MODEL_CATALOG[requestedModel].maxOutputTokens ?? MAX_COMPLETION_TOKENS,
+          MAX_COMPLETION_TOKENS,
+        ),
+      }
+      if (provider.id === 'nanogpt') {
+        upstreamBody.stream_options = { include_usage: true }
+        if (MODEL_CATALOG[requestedModel].capabilities.reasoning && reasoningEnabled !== undefined) {
+          upstreamBody.reasoning_effort = reasoningEnabled ? 'medium' : 'none'
+        }
+        if (webSearchEnabled) {
+          upstreamBody.webSearch = {
+            enabled: true,
+            provider: 'linkup',
+            depth: 'standard',
+          }
+        }
+      }
+      return upstreamBody
+    }
+    const fetchUpstream = (webSearchEnabled: boolean) =>
+      fetch(provider.chatUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify(createUpstreamBody(webSearchEnabled)),
+        signal: controller.signal,
+      })
+
+    let upstream = await fetchUpstream(integratedWebSearch)
+    let upstreamError = upstream.ok
+      ? undefined
+      : parseUpstreamError(await upstream.text(), provider)
+
+    if (
+      integratedWebSearch &&
+      upstreamError &&
+      isRetryableIntegratedWebSearchFailure(upstream.status, upstreamError)
+    ) {
+      webSearchStatus = 'fallback'
+      webSearchWarning =
+        '웹 검색에 연결하지 못해 현재 모델의 기본 지식으로 답변합니다.'
+      upstream = await fetchUpstream(false)
+      upstreamError = upstream.ok
+        ? undefined
+        : parseUpstreamError(await upstream.text(), provider)
+    }
 
     if (!upstream.ok) {
-      const error = parseUpstreamError(await upstream.text(), provider)
+      const error = upstreamError ?? { message: `${provider.name} 응답을 가져오지 못했습니다.` }
       const requestId = upstream.headers.get('x-request-id')
       sendJson(response, upstream.status || 502, {
         error: error.message,
@@ -310,6 +419,15 @@ export async function handleOrcaRouterChat(request: IncomingMessage, response: S
 
     response.writeHead(200, headers)
     response.flushHeaders()
+    response.write(
+      createWebSearchMetaEvent({
+        mode: webSearchMode,
+        status: webSearchStatus,
+        reason: resolution.reason,
+        sources: webSearchSources,
+        warning: webSearchWarning,
+      }),
+    )
 
     const reader = upstream.body.getReader()
     while (true) {
@@ -335,5 +453,6 @@ export async function handleOrcaRouterChat(request: IncomingMessage, response: S
     }
   } finally {
     request.removeListener('aborted', abortUpstream)
+    response.removeListener('close', abortUpstream)
   }
 }
