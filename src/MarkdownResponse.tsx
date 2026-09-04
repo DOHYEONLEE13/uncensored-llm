@@ -1,6 +1,10 @@
+import React from 'react'
 import ReactMarkdown from 'react-markdown'
+import rehypeKatex, { type Options as RehypeKatexOptions } from 'rehype-katex'
 import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
+import remarkMath, { type Options as RemarkMathOptions } from 'remark-math'
+import { normalizeMathSyntax } from './mathMarkdown'
 import MermaidDiagram from './MermaidDiagram'
 
 type MarkdownSegment =
@@ -12,6 +16,13 @@ const closedMermaidFence =
 
 const MAX_RENDERED_DIAGRAMS = 3
 const MAX_TOTAL_DIAGRAM_BYTES = 24 * 1024
+const remarkMathOptions: RemarkMathOptions = { singleDollarTextMath: false }
+const katexOptions: RehypeKatexOptions = {
+  maxExpand: 1000,
+  maxSize: 20,
+  strict: 'warn',
+  trust: false,
+}
 
 function isSafeExternalUrl(value: string | undefined) {
   if (!value) return false
@@ -64,7 +75,8 @@ export default function MarkdownResponse({ content }: { content: string }) {
     ) : (
       <ReactMarkdown
         key={`markdown-${index}`}
-        remarkPlugins={[remarkGfm, remarkBreaks]}
+        remarkPlugins={[[remarkMath, remarkMathOptions], remarkGfm, remarkBreaks]}
+        rehypePlugins={[[rehypeKatex, katexOptions]]}
         components={{
           a: ({ href, children, node: _node, ...props }) =>
             isSafeExternalUrl(href) ? (
@@ -76,7 +88,7 @@ export default function MarkdownResponse({ content }: { content: string }) {
             ),
         }}
       >
-        {segment.content}
+        {normalizeMathSyntax(segment.content)}
       </ReactMarkdown>
     ),
   )

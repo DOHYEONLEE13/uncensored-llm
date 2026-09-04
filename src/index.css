@@ -408,6 +408,24 @@ button {
   border-top: 1px solid rgba(255, 255, 255, 0.14);
 }
 
+.markdown-response .katex {
+  color: inherit;
+  font-size: 1.02em;
+}
+
+.markdown-response .katex-display {
+  max-width: 100%;
+  margin: 1.15em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.2em 0;
+  scrollbar-width: thin;
+}
+
+.markdown-response .katex-display > .katex {
+  min-width: max-content;
+}
+
 ::-webkit-scrollbar {
   width: 5px;
 }
