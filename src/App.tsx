@@ -1702,10 +1702,10 @@ export default function App() {
                               </button>
                               <button type="button" onMouseDown={(event) => event.preventDefault()}
                                 onClick={() => { setComposerToolsOpen(false); setOpenModelPicker(null); setDomainAnalysisOpen(true) }}
-                                aria-label="도메인 분석 열기" aria-haspopup="dialog" disabled={isThinking}
+                                aria-label="웹 해킹 열기" aria-haspopup="dialog" disabled={isThinking}
                                 className="flex h-10 w-full items-center gap-2 rounded-[14px] border border-white/10 bg-white/[0.045] p-1 pr-3 text-left text-white/58 transition hover:border-white/18 hover:bg-white/[0.07] hover:text-white/82 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#c8f2e0]/40 disabled:cursor-not-allowed disabled:opacity-35">
                                 <span className="grid size-7 shrink-0 place-items-center rounded-full border border-current/15 bg-white/[0.035]"><Search className="size-3.5" strokeWidth={1.65} /></span>
-                                <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-[-0.02em]">도메인 분석</span>
+                                <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-[-0.02em]">웹 해킹</span>
                                 <span className="text-[10px] font-semibold text-current/55">공개 정보</span>
                               </button>
                               <button

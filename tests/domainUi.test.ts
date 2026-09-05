@@ -47,7 +47,7 @@ async function setup(responder: (input: string, init?: RequestInit) => Promise<R
   await act(async () => root.render(createElement(App)))
   await act(async () => host.querySelector('textarea')!.focus()); await settle()
   await click('채팅 도구 열기')
-  await click('도메인 분석 열기')
+  await click('웹 해킹 열기')
   for (let i = 0; i < 30 && !dom.document.querySelector('.domain-dialog'); i++) await settle()
   assert.ok(dom.document.querySelector('dialog[open]'))
   async function submit(value: string) {
@@ -76,14 +76,14 @@ test('plus menu opens domain dialog, evidence appears before AI, graph is intera
     await view.submit('example.com')
     assert.match(dom.document.querySelector('.domain-report-heading')!.textContent, /example.com/)
     assert.equal(aiBody?.webSearchMode, 'off')
-    assert.match(dom.document.querySelector('.domain-ai')!.textContent, /해설하고 있습니다/)
+    assert.match(dom.document.querySelector('.domain-ai')!.textContent, /살펴보고 있습니다/)
     const graph = Array.from(dom.document.querySelectorAll('.domain-tabs button')).find((button) => button.textContent === '연결 지도')!
     await act(async () => graph.click())
     await act(async () => dom.document.querySelector<HTMLButtonElement>('.domain-graph-node')!.click())
     assert.match(dom.document.querySelector('.domain-selected')!.textContent, /<script>do not execute<\/script>/)
     assert.equal(dom.document.querySelector('.domain-selected script'), null)
     assert.equal(dom.localStorage.getItem('mira-conversations')?.includes('example.com') ?? false, false)
-    await click('도메인 분석 닫기')
+    await click('웹 해킹 닫기')
     assert.equal(aiSignal?.aborted, true)
     assert.equal(dom.document.querySelector('.domain-dialog'), null)
     assert.equal(dom.document.body.style.overflow, '')
@@ -125,11 +125,149 @@ test('AI failure leaves collected results usable and retry streams an explanatio
   try {
     await view.submit('example.com')
     assert.ok(dom.document.querySelector('.domain-metrics'))
-    assert.match(dom.document.querySelector('.domain-ai .domain-error')!.textContent, /AI 해설/)
+    assert.match(dom.document.querySelector('.domain-ai .domain-error')!.textContent, /AI 응답/)
     const retry = Array.from(dom.document.querySelectorAll('.domain-ai button')).find((button) => button.textContent === 'AI 해설 다시 요청')!
     await act(async () => retry.click()); await settle()
     assert.equal(aiCalls, 2)
     assert.match(dom.document.querySelector('.domain-explanation')!.textContent, /공개 인증서 기록/)
     assert.equal(dom.document.querySelector('.domain-ai .domain-error'), null)
+  } finally { await view.dispose() }
+})
+
+async function ask(question: string) {
+  const input = dom.document.querySelector('.domain-chat-composer textarea')!
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.HTMLTextAreaElement.prototype, 'value')!.set!.call(input, question)
+    input.dispatchEvent(new dom.Event('input', { bubbles: true }))
+    input.dispatchEvent(new dom.Event('change', { bubbles: true }))
+  })
+  await act(async () => input.closest('form')!.dispatchEvent(new dom.Event('submit', { bubbles: true, cancelable: true })))
+  await settle()
+}
+const sse = (content: string) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`
+const answer = (content: string) => new Response(`${sse(content)}data: [DONE]\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
+
+test('web hacking title, follow-up context and conversation survive result navigation without storing chat', async () => {
+  const requests: { model: string; webSearchMode: string; messages: { role: string; content: string }[] }[] = []
+  let scans = 0
+  const view = await setup(async (url, init) => {
+    if (url === '/api/domain/analyze') { scans++; return Response.json(report) }
+    requests.push(JSON.parse(String(init!.body)))
+    return answer(['초기 해설입니다.', 'DNS는 도메인의 연결 정보를 제공합니다.', '인증서 관측 시점을 확인하세요.'][requests.length - 1])
+  })
+  try {
+    assert.equal(dom.document.querySelector('.domain-heading h2')!.textContent?.replace('_', ''), '웹 해킹')
+    await view.submit('example.com')
+    await ask('DNS는 무엇인가요?')
+    const graph = Array.from(dom.document.querySelectorAll('.domain-tabs button')).find((button) => button.textContent === '연결 지도')!
+    await act(async () => graph.click())
+    assert.match(dom.document.querySelector('.domain-ai')!.textContent, /DNS는 도메인/)
+    await ask('그럼 인증서는요?')
+    assert.equal(scans, 1)
+    assert.equal(requests.length, 3)
+    assert.equal(requests[2].webSearchMode, 'off')
+    assert.match(requests[2].messages[0].content, /evidence_json/)
+    assert.match(requests[2].messages[0].content, /example\.com/)
+    assert.doesNotMatch(requests[2].messages[0].content, /총 3개의 짧은 문단/)
+    assert.deepEqual(requests[2].messages.slice(1), [
+      { role: 'assistant', content: '초기 해설입니다.' }, { role: 'user', content: 'DNS는 무엇인가요?' },
+      { role: 'assistant', content: 'DNS는 도메인의 연결 정보를 제공합니다.' }, { role: 'user', content: '그럼 인증서는요?' },
+    ])
+    assert.equal(dom.document.querySelectorAll('.domain-chat-message.user').length, 2)
+    assert.doesNotMatch(dom.localStorage.getItem('mira-conversations') ?? '', /DNS는|인증서는|example\.com/)
+  } finally { await view.dispose() }
+})
+
+test('failed follow-up retry preserves completed answers and replaces the last question once', async () => {
+  const requests: unknown[] = []
+  const view = await setup(async (url, init) => {
+    if (url === '/api/domain/analyze') return Response.json(report)
+    requests.push(JSON.parse(String(init!.body)))
+    return requests.length === 2 ? Response.json({}, { status: 503 }) : answer(requests.length === 1 ? '유지할 초기 해설' : '재시도 답변')
+  })
+  try {
+    await view.submit('example.com'); await ask('첫 번째 질문')
+    assert.match(dom.document.querySelector('.domain-ai')!.textContent, /유지할 초기 해설/)
+    const retry = Array.from(dom.document.querySelectorAll('.domain-ai button')).find((button) => button.textContent?.includes('답변 다시 요청'))!
+    await act(async () => retry.click()); await settle()
+    assert.deepEqual(requests[2], requests[1])
+    assert.equal(dom.document.querySelectorAll('.domain-chat-message.user').length, 1)
+    assert.match(dom.document.querySelector('.domain-ai')!.textContent, /재시도 답변/)
+  } finally { await view.dispose() }
+})
+
+test('stopping a stream retains its partial text but excludes it from future context and ignores late chunks', async () => {
+  let stream: ReadableStreamDefaultController<Uint8Array> | undefined
+  let calls = 0
+  let request: { messages: { content: string }[] } | undefined
+  const view = await setup(async (url, init) => {
+    if (url === '/api/domain/analyze') return Response.json(report)
+    calls++
+    if (calls === 1) return new Response(new ReadableStream({ start(controller) { stream = controller; controller.enqueue(new TextEncoder().encode(sse('미완료 초기 해설'))) } }))
+    request = JSON.parse(String(init!.body))
+    return answer('새 질문의 정상 답변')
+  })
+  try {
+    await view.submit('example.com')
+    await click('AI 응답 중지')
+    assert.match(dom.document.querySelector('.domain-ai')!.textContent, /미완료 초기 해설/)
+    await ask('새로운 질문')
+    assert.equal(request!.messages.some((message) => message.content.includes('미완료 초기 해설')), false)
+    await act(async () => { stream!.enqueue(new TextEncoder().encode(sse('늦은 이전 청크'))); stream!.close() }); await settle()
+    assert.doesNotMatch(dom.document.querySelector('.domain-ai')!.textContent, /늦은 이전 청크/)
+    assert.match(dom.document.querySelector('.domain-ai')!.textContent, /새 질문의 정상 답변/)
+  } finally { await view.dispose() }
+})
+
+test('new domain aborts old chat and clears messages while an old stream finishing cannot change the new chat', async () => {
+  let stream: ReadableStreamDefaultController<Uint8Array> | undefined
+  let oldSignal: AbortSignal | undefined
+  let calls = 0
+  const view = await setup(async (url, init) => {
+    if (url === '/api/domain/analyze') return Response.json({ ...report, domain: JSON.parse(String(init!.body)).domain })
+    calls++
+    if (calls === 1) { oldSignal = init!.signal!; return new Response(new ReadableStream({ start(controller) { stream = controller; controller.enqueue(new TextEncoder().encode(sse('이전 도메인 답변'))) } })) }
+    assert.doesNotMatch(String(init!.body), /이전 도메인 답변/)
+    return answer('새 도메인 해설')
+  })
+  try {
+    await view.submit('example.com')
+    await view.submit('example.net')
+    assert.equal(oldSignal!.aborted, true)
+    assert.match(dom.document.querySelector('.domain-chat-context')!.textContent, /example.net/)
+    await act(async () => { stream!.enqueue(new TextEncoder().encode(sse('과거 응답'))); stream!.close() }); await settle()
+    assert.doesNotMatch(dom.document.querySelector('.domain-ai')!.textContent, /이전 도메인|과거 응답/)
+    assert.match(dom.document.querySelector('.domain-ai')!.textContent, /새 도메인 해설/)
+  } finally { await view.dispose() }
+})
+
+test('Korean composing Enter and Shift+Enter do not send, and rapid submission sends only once', async () => {
+  let calls = 0
+  const view = await setup(async (url) => {
+    if (url === '/api/domain/analyze') return Response.json(report)
+    calls++
+    return answer('정상 답변')
+  })
+  try {
+    await view.submit('example.com')
+    const input = dom.document.querySelector('.domain-chat-composer textarea')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(dom.HTMLTextAreaElement.prototype, 'value')!.set!.call(input, '조합 중 질문')
+      input.dispatchEvent(new dom.Event('input', { bubbles: true }))
+      input.dispatchEvent(new dom.Event('change', { bubbles: true }))
+    })
+    await act(async () => {
+      input.dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true }))
+      input.dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true }))
+    })
+    assert.equal(calls, 1)
+    await act(async () => {
+      const form = input.closest('form')!
+      form.dispatchEvent(new dom.Event('submit', { bubbles: true, cancelable: true }))
+      form.dispatchEvent(new dom.Event('submit', { bubbles: true, cancelable: true }))
+    })
+    await settle()
+    assert.equal(calls, 2)
+    assert.equal(dom.document.querySelectorAll('.domain-chat-message.user').length, 1)
   } finally { await view.dispose() }
 })

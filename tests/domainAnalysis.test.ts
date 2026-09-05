@@ -4,7 +4,7 @@ import { createDomainService, normalizeDomain, parseObservedPage } from '../serv
 import { createDomainHandler } from '../server/domainHttp.ts'
 import { onRequest } from '../functions/api/domain/analyze.ts'
 import type { DomainReport } from '../server/domainTypes.ts'
-import { buildDomainExplanationPrompt } from '../src/domainAnalysis.ts'
+import { buildDomainChatMessages, buildDomainExplanationPrompt, type DomainChatMessage } from '../src/domainAnalysis.ts'
 
 const emptyReport = (): DomainReport => ({ version: 1, domain: 'example.com', queriedAt: '2026-09-06T00:00:00.000Z', cacheHit: false, dns: [], facts: [], sources: [], findings: [], connections: [], timeline: [] })
 const uuid = '12345678-1234-1234-1234-123456789abc'
@@ -172,4 +172,21 @@ test('AI receives different measured cookie results without receiving raw cookie
   assert.match(buildDomainExplanationPrompt(first), /"secure":1/)
   assert.match(buildDomainExplanationPrompt(second), /"secure":0/)
   assert.doesNotMatch(buildDomainExplanationPrompt(first), /never-share/)
+})
+
+test('follow-up context keeps evidence and complete recent pairs within a bounded budget', () => {
+  const report = emptyReport()
+  const history: DomainChatMessage[] = [{ id: 0, role: 'assistant', content: '최초 해설', status: 'complete' }]
+  for (let index = 1; index <= 60; index++) {
+    history.push({ id: index * 2, role: 'user', content: `질문 ${index}`, status: 'complete' }, { id: index * 2 + 1, role: 'assistant', content: `답변 ${index} ${'a'.repeat(6000)}`, status: 'complete' })
+  }
+  history.push({ id: 200, role: 'user', content: '실패한 질문', status: 'complete' }, { id: 201, role: 'assistant', content: '미완료 내용', status: 'error' })
+  const messages = buildDomainChatMessages(report, history, '현재 질문')
+  assert.match(messages[0].content, /evidence_json/)
+  assert.equal(messages.at(-1)?.content, '현재 질문')
+  assert.ok(messages.length < 16)
+  assert.ok(messages.slice(1, -1).reduce((sum, item) => sum + item.content.length, 0) <= 36_000)
+  assert.ok(messages.some((item) => item.content.startsWith('답변 60 ')))
+  assert.equal(messages.some((item) => /실패한 질문|미완료 내용/.test(item.content)), false)
+  assert.throws(() => buildDomainChatMessages(report, history, 'a'.repeat(3001)))
 })
