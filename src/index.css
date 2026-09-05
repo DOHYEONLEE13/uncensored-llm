@@ -1,6 +1,67 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Manrope:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
+/* CCTV stays within the assistant reply; no viewport/fixed composer changes. */
+.cctv-results {
+  width: 100%;
+  min-width: 0;
+  max-width: 42rem;
+  margin-top: 1rem;
+  overflow: hidden;
+  border: 1px solid rgb(200 242 224 / 18%);
+  border-radius: 20px;
+  background: rgb(10 34 40 / 60%);
+  box-shadow: 0 8px 24px rgb(3 18 23 / 16%);
+  backdrop-filter: blur(20px);
+  font-size: 0.875rem;
+}
+.cctv-results-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 12px 14px; color: #d6f5e8; }
+.cctv-provider { flex-shrink: 0; border: 1px solid rgb(189 235 217 / 25%); border-radius: 6px; background: rgb(189 235 217 / 8%); padding: 2px 6px; color: #d6f5e8; font-size: 0.75rem; font-weight: 600; }
+.cctv-map-frame { position: relative; width: 100%; min-width: 0; height: 320px; overflow: hidden; border-block: 1px solid rgb(255 255 255 / 10%); background: rgb(5 25 31 / 45%); }
+.cctv-map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.cctv-map-status { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; color: rgb(224 245 237 / 80%); text-align: center; line-height: 1.7; overflow-wrap: anywhere; }
+.cctv-map-frame > .cctv-map-status { position: absolute; inset: 0; }
+.cctv-map-status p { max-width: 22rem; margin: 0; }
+.cctv-map-legend, .cctv-map-distance { position: absolute; z-index: 1; display: flex; align-items: center; gap: 4px; max-width: calc(100% - 24px); padding: 6px 10px; border: 1px solid rgb(200 242 224 / 25%); border-radius: 10px; background: rgb(6 30 37 / 90%); color: #e0f5ed; font-size: 0.75rem; overflow-wrap: anywhere; pointer-events: none; }
+.cctv-map-legend { top: 12px; left: 12px; max-width: calc(100% - 78px); }
+.cctv-map-legend svg { flex-shrink: 0; }
+.cctv-map-distance { bottom: 32px; left: 12px; }
+.cctv-map-user { display: flex; align-items: center; gap: 5px; padding: 4px 7px; border: 1px solid #ffffff; border-radius: 20px; background: #174e74; color: #fff; box-shadow: 0 2px 8px rgb(0 0 0 / 25%); font-size: 12px; white-space: nowrap; }
+.cctv-map-user-dot { width: 12px; height: 12px; border: 2px solid white; border-radius: 50%; background: #59bcff; }
+.cctv-map-marker { display: grid; place-items: center; width: 38px; height: 38px; margin-bottom: 4px; border: 2px solid #e2f6ec; border-radius: 12px 12px 12px 3px; background: #23594c; color: white; box-shadow: 0 2px 6px rgb(0 0 0 / 25%); font-size: 14px; font-weight: 700; cursor: pointer; }
+.cctv-map-marker:hover, .cctv-map-marker[aria-pressed="true"] { background: #d1f5df; color: #164535; border-color: #164535; box-shadow: 0 0 0 2px rgb(255 255 255 / 80%); }
+.cctv-map-controls { position: absolute; top: 12px; right: 10px; z-index: 2; display: flex; flex-direction: column; overflow: hidden; border: 1px solid rgb(200 242 224 / 30%); border-radius: 12px; background: #153d42; box-shadow: 0 2px 8px rgb(0 0 0 / 20%); }
+.cctv-map-controls button { width: 44px; height: 44px; border: 0; border-bottom: 1px solid rgb(200 242 224 / 15%); background: transparent; color: #e4f7ed; font-size: 18px; cursor: pointer; }
+.cctv-map-controls button:last-child { border-bottom: 0; font-size: 12px; }
+.cctv-map-controls button:hover { background: rgb(200 242 224 / 15%); }
+.cctv-selected-panel { padding: 14px; border-bottom: 1px solid rgb(200 242 224 / 16%); background: rgb(200 242 224 / 5%); }
+.cctv-selected-heading { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 12px; }
+.cctv-selected-heading h3 { margin: 0; color: #f0faf5; font-size: 0.875rem; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.cctv-selected-heading p { margin: 4px 0 0; color: rgb(233 247 241 / 70%); font-size: 0.75rem; overflow-wrap: anywhere; }
+.cctv-action, .cctv-close { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; border: 1px solid rgb(255 255 255 / 16%); border-radius: 12px; background: rgb(255 255 255 / 6%); color: #e0f5ed; }
+.cctv-action { padding: 8px 14px; max-width: 100%; font-size: 0.875rem; }
+.cctv-close { width: 44px; flex-shrink: 0; }
+.cctv-list-caption, .cctv-empty { margin: 0; padding: 12px 14px; color: rgb(233 247 241 / 70%); font-size: 0.75rem; line-height: 1.7; }
+.cctv-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin: 0; padding: 0 10px 12px; list-style: none; }
+.cctv-list li { min-width: 0; }
+.cctv-list-button { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 52px; padding: 9px 10px; text-align: left; border: 1px solid transparent; border-radius: 12px; background: rgb(255 255 255 / 3%); color: rgb(233 247 241 / 82%); transition: background-color 150ms, border-color 150ms; }
+.cctv-list-button:hover, .cctv-action:hover, .cctv-close:hover { background: rgb(200 242 224 / 10%); }
+.cctv-list-button[aria-pressed="true"] { border-color: rgb(200 242 224 / 65%); background: rgb(200 242 224 / 13%); color: #f1fff8; }
+.cctv-list-name { min-width: 0; flex: 1; overflow-wrap: anywhere; font-size: 0.875rem; line-height: 1.5; }
+.cctv-list-name > span { display: block; margin-top: 2px; color: rgb(233 247 241 / 65%); font-size: 0.75rem; }
+.cctv-list-distance { flex-shrink: 0; font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.cctv-results button:focus-visible { outline: 2px solid #c8f2e0; outline-offset: -3px; }
+.cctv-video { margin-top: 12px; overflow: hidden; border: 1px solid rgb(255 255 255 / 12%); border-radius: 12px; background: rgb(0 0 0 / 35%); }
+.cctv-video video, .cctv-video img { display: block; width: 100%; max-width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; }
+.cctv-video-error { display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 10px 12px; color: #f1d9b1; font-size: 0.75rem; line-height: 1.6; }
+@media (min-width: 768px) {
+  .cctv-map-frame { height: 420px; }
+  .cctv-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cctv-results *, .cctv-results *::before, .cctv-results *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
 @theme {
   --font-sans: "Manrope", sans-serif;
   --font-display: "DM Serif Display", serif;

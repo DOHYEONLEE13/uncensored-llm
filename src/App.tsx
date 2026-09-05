@@ -18,6 +18,7 @@ import {
   CircleUserRound,
   Eye,
   Globe2,
+  MapPin,
   Menu,
   MessageCircleMore,
   MoreHorizontal,
@@ -34,6 +35,17 @@ import {
   type WebSearchSource,
   type WebSearchStatus,
 } from './chatStream'
+import CctvResults from './CctvResults'
+import {
+  CctvClientError,
+  CCTV_LIMIT,
+  CCTV_RADIUS_METERS,
+  fetchNearbyCctvs,
+  getCurrentCoordinates,
+  isExplicitCctvIntent,
+  type Coordinates,
+  type NearbyCctv,
+} from './cctv'
 
 type TokenUsage = {
   promptTokens: number
@@ -53,6 +65,7 @@ type ChatMessage = {
   webSearchStatus?: WebSearchStatus
   webSearchSources?: WebSearchSource[]
   webSearchWarning?: string
+  cctvs?: NearbyCctv[]
 }
 
 type Conversation = {
@@ -63,6 +76,9 @@ type Conversation = {
 }
 
 type ConnectionStatus = 'success' | 'failure'
+
+// GPS belongs only to the current CCTV view, never to chat/conversation history.
+type CctvLocation = { messageId: number; coordinates: Coordinates }
 
 type PublicModelMetadata = {
   id: string
@@ -134,6 +150,17 @@ function formatConversationTime(updatedAt: number) {
 function createConversationTitle(content: string) {
   const normalized = content.replace(/\s+/g, ' ').trim()
   return normalized.length > 24 ? `${normalized.slice(0, 24)}…` : normalized
+}
+
+function getPersistableConversations(conversations: Conversation[]): Conversation[] {
+  return conversations.map((conversation) => ({
+    ...conversation,
+    messages: conversation.messages.map((message) => {
+      const persistedMessage = { ...message }
+      delete persistedMessage.cctvs
+      return persistedMessage
+    }),
+  }))
 }
 
 function loadReasoningPreferences() {
@@ -586,10 +613,12 @@ function MessageList({
   messages,
   isThinking,
   pendingLabel,
+  cctvLocation,
 }: {
   messages: ChatMessage[]
   isThinking: boolean
   pendingLabel?: string
+  cctvLocation: CctvLocation | null
 }) {
   return (
     <div className="mx-auto flex w-full max-w-[960px] flex-col gap-7 px-1 py-7 md:px-8 md:py-10">
@@ -653,6 +682,12 @@ function MessageList({
                     {message.webSearchWarning}
                   </p>
                 )}
+                {message.cctvs && (
+                  <CctvResults
+                    cctvs={message.cctvs}
+                    coordinates={cctvLocation?.messageId === message.id ? cctvLocation.coordinates : undefined}
+                  />
+                )}
               </div>
             )}
           </motion.article>
@@ -663,7 +698,11 @@ function MessageList({
           <MiraAvatar className="size-8 drop-shadow-[0_7px_14px_rgba(4,19,24,0.28)]" />
           {pendingLabel ? (
             <div className="inline-flex items-center gap-2 px-1 py-2.5 text-[11px] text-white/52">
-              <Globe2 className="size-3.5 animate-pulse text-[#c8f2e0]/75" strokeWidth={1.6} />
+              {/(?:위치|CCTV)/i.test(pendingLabel) ? (
+                <MapPin className="size-3.5 animate-pulse text-[#c8f2e0]/75" strokeWidth={1.6} />
+              ) : (
+                <Globe2 className="size-3.5 animate-pulse text-[#c8f2e0]/75" strokeWidth={1.6} />
+              )}
               {pendingLabel}
             </div>
           ) : (
@@ -690,6 +729,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [draft, setDraft] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [cctvLocation, setCctvLocation] = useState<CctvLocation | null>(null)
   const [conversations, setConversations] = useState<Conversation[]>(loadConversations)
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('success')
@@ -712,6 +752,8 @@ export default function App() {
   const messagesContentRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
   const requestControllerRef = useRef<AbortController | null>(null)
+  const cctvRequestControllerRef = useRef<AbortController | null>(null)
+  const operationGenerationRef = useRef(0)
   const selectedModelMetadata = modelMetadata[modelName]
   const supportsReasoning = Boolean(selectedModelMetadata?.capabilities.reasoningControl)
   const reasoningEnabled = supportsReasoning
@@ -811,10 +853,19 @@ export default function App() {
     return () => document.removeEventListener('pointerdown', closeOnPointerDown)
   }, [composerToolsOpen])
 
-  useEffect(() => () => requestControllerRef.current?.abort(), [])
+  useEffect(
+    () => () => {
+      operationGenerationRef.current += 1
+      requestControllerRef.current?.abort()
+    },
+    [],
+  )
 
   useEffect(() => {
-    window.localStorage.setItem(CONVERSATIONS_STORAGE_KEY, JSON.stringify(conversations))
+    window.localStorage.setItem(
+      CONVERSATIONS_STORAGE_KEY,
+      JSON.stringify(getPersistableConversations(conversations)),
+    )
   }, [conversations])
 
   useEffect(() => {
@@ -910,8 +961,11 @@ export default function App() {
   }, [])
 
   const newChat = () => {
+    setCctvLocation(null)
+    operationGenerationRef.current += 1
     requestControllerRef.current?.abort()
     requestControllerRef.current = null
+    cctvRequestControllerRef.current = null
     setActiveConversationId(null)
     setMessages([])
     setDraft('')
@@ -927,9 +981,12 @@ export default function App() {
   const selectConversation = (conversationId: string) => {
     const conversation = conversations.find((item) => item.id === conversationId)
     if (!conversation) return
+    setCctvLocation(null)
 
+    operationGenerationRef.current += 1
     requestControllerRef.current?.abort()
     requestControllerRef.current = null
+    cctvRequestControllerRef.current = null
     setActiveConversationId(conversation.id)
     setMessages(conversation.messages)
     setDraft('')
@@ -949,8 +1006,11 @@ export default function App() {
     setConversations((current) => current.filter((item) => item.id !== conversationId))
 
     if (conversationId === activeConversationId) {
+      setCctvLocation(null)
+      operationGenerationRef.current += 1
       requestControllerRef.current?.abort()
       requestControllerRef.current = null
+      cctvRequestControllerRef.current = null
       setActiveConversationId(null)
       setMessages([])
       setDraft('')
@@ -961,10 +1021,106 @@ export default function App() {
     }
   }
 
+  const submitCctvMessage = async (content: string) => {
+    const normalizedContent = content.trim()
+    if (!normalizedContent || isThinking) return
+
+    const operationGeneration = operationGenerationRef.current + 1
+    setCctvLocation(null)
+    operationGenerationRef.current = operationGeneration
+    requestControllerRef.current?.abort()
+
+    const messageId = Date.now()
+    const assistantId = messageId + 1
+    const userMessage: ChatMessage = {
+      id: messageId,
+      role: 'user',
+      content: normalizedContent,
+      tokenEstimate: estimateTextTokens(normalizedContent),
+    }
+    const requestMessages = [...messages, userMessage]
+    const conversationId = activeConversationId ?? crypto.randomUUID()
+    const controller = new AbortController()
+
+    if (!activeConversationId) setActiveConversationId(conversationId)
+    requestControllerRef.current = controller
+    stickToBottomRef.current = true
+    setMessages(requestMessages)
+    setDraft('')
+    setIsThinking(true)
+    setPendingLabel('현재 위치를 확인 중…')
+    cctvRequestControllerRef.current = controller
+    setComposerToolsOpen(false)
+    setOpenModelPicker(null)
+
+    try {
+      const coordinates = await getCurrentCoordinates()
+      if (operationGenerationRef.current !== operationGeneration) return
+
+      setPendingLabel('주변 CCTV를 찾는 중…')
+      const result = await fetchNearbyCctvs(coordinates, {
+        signal: controller.signal,
+        radiusKm: CCTV_RADIUS_METERS / 1_000,
+        limit: CCTV_LIMIT,
+      })
+      if (operationGenerationRef.current !== operationGeneration) return
+
+      const count = result.cctvs.length
+      setCctvLocation({ messageId: assistantId, coordinates })
+      setMessages((current) => [
+        ...current.filter((message) => message.id !== assistantId),
+        {
+          id: assistantId,
+          role: 'assistant',
+          content:
+            count > 0
+              ? `현재 위치 반경 2km 안의 ITS 도로 CCTV ${count}곳을 거리순으로 찾았습니다.`
+              : '현재 위치 반경 2km 안의 ITS 도로 CCTV 조회 결과입니다.',
+          tokenEstimate: 24,
+          cctvs: result.cctvs,
+        },
+      ])
+    } catch (error) {
+      if (
+        controller.signal.aborted ||
+        operationGenerationRef.current !== operationGeneration ||
+        (error instanceof DOMException && error.name === 'AbortError')
+      ) {
+        return
+      }
+
+      const errorMessage =
+        error instanceof CctvClientError
+          ? error.message
+          : '주변 CCTV를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.'
+      setMessages((current) => [
+        ...current.filter((message) => message.id !== assistantId),
+        {
+          id: assistantId,
+          role: 'assistant',
+          content: errorMessage,
+          tokenEstimate: estimateTextTokens(errorMessage),
+        },
+      ])
+    } finally {
+      if (cctvRequestControllerRef.current === controller) cctvRequestControllerRef.current = null
+      if (operationGenerationRef.current === operationGeneration) {
+        if (requestControllerRef.current === controller) requestControllerRef.current = null
+        setIsThinking(false)
+        setPendingLabel(undefined)
+      }
+    }
+  }
+
   const submitMessage = async (event?: FormEvent) => {
     event?.preventDefault()
     const content = draft.trim()
     if (!content || isThinking) return
+
+    if (isExplicitCctvIntent(content)) {
+      await submitCctvMessage(content)
+      return
+    }
 
     const requestModel = modelName
     const requestSupportsReasoning = Boolean(
@@ -1282,6 +1438,15 @@ export default function App() {
                   type="button"
                   onClick={() => {
                     setWorkspaceOpen(false)
+                    setCctvLocation(null)
+                    if (cctvRequestControllerRef.current && cctvRequestControllerRef.current === requestControllerRef.current) {
+                      operationGenerationRef.current += 1
+                      cctvRequestControllerRef.current.abort()
+                      cctvRequestControllerRef.current = null
+                      requestControllerRef.current = null
+                      setIsThinking(false)
+                      setPendingLabel(undefined)
+                    }
                     setSidebarOpen(false)
                     setOpenModelPicker(null)
                     setComposerToolsOpen(false)
@@ -1313,6 +1478,7 @@ export default function App() {
                       messages={messages}
                       isThinking={isThinking}
                       pendingLabel={pendingLabel}
+                      cctvLocation={cctvLocation}
                     />
                   )}
                 </div>
@@ -1511,6 +1677,23 @@ export default function App() {
                                 <span className="text-[10px] font-semibold text-current/55">
                                   {WEB_SEARCH_MODE_PRESENTATION[webSearchMode].label}
                                 </span>
+                              </button>
+                              <button
+                                type="button"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => void submitCctvMessage('내 주변 CCTV 보여줘')}
+                                disabled={isThinking}
+                                aria-label="현재 위치에서 가까운 ITS 도로 CCTV 찾기"
+                                title="현재 위치를 한 번 확인해 가까운 ITS CCTV를 찾습니다"
+                                className="flex h-10 w-full items-center gap-2 rounded-[14px] border border-white/10 bg-white/[0.045] p-1 pr-3 text-left text-white/58 transition hover:border-white/18 hover:bg-white/[0.07] hover:text-white/82 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#c8f2e0]/40 disabled:cursor-not-allowed disabled:opacity-35"
+                              >
+                                <span className="relative grid size-7 shrink-0 place-items-center rounded-full border border-current/15 bg-white/[0.035]">
+                                  <MapPin className="size-3.5" strokeWidth={1.65} />
+                                </span>
+                                <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-[-0.02em]">
+                                  주변 CCTV
+                                </span>
+                                <span className="text-[10px] font-semibold text-current/55">ITS</span>
                               </button>
                             </motion.div>
                           )}
