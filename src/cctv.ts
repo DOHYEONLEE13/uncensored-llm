@@ -62,9 +62,13 @@ export type NearbyCctv = {
   streamUrl: string
   format: CctvFormat
   roadType?: string
+  roadName?: string
   roadSectionId?: string
   updatedAt?: string
 }
+
+export type CctvCamera = Omit<NearbyCctv, 'distanceMeters'> & { distanceMeters?: number }
+export type CctvSearchResponse = { cctvs: CctvCamera[]; query: string; total: number }
 
 export type CctvCacheMetadata = {
   status: 'fresh' | 'cached' | 'stale'
@@ -82,6 +86,7 @@ export type CctvClientErrorCode =
   | 'location_timeout'
   | 'location_unsupported'
   | 'invalid_location'
+  | 'invalid_request'
   | 'invalid_response'
   | 'network_error'
   | 'request_failed'
@@ -102,6 +107,7 @@ const ERROR_MESSAGES: Record<CctvClientErrorCode, string> = {
   location_timeout: '위치 확인 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.',
   location_unsupported: '이 브라우저에서는 위치 정보를 사용할 수 없습니다.',
   invalid_location: '유효한 위치 정보를 받지 못했습니다.',
+  invalid_request: '검색할 도로명 또는 CCTV 이름을 확인해 주세요.',
   invalid_response: 'CCTV 정보를 읽는 중 문제가 발생했습니다.',
   network_error: 'CCTV 서비스에 연결할 수 없습니다. 네트워크를 확인해 주세요.',
   request_failed: '주변 CCTV를 불러오지 못했습니다.',
@@ -143,6 +149,20 @@ const EXPLICIT_CCTV_INTENT = /(?:\bcctv\b|교통\s*(?:카메라|영상)|도로\s
  */
 export function isExplicitCctvIntent(text: string): boolean {
   return typeof text === 'string' && EXPLICIT_CCTV_INTENT.test(text.trim())
+}
+
+/** Extract a named camera/road request; generic nearby requests keep geolocation. */
+export function getCctvSearchQuery(text: string): string | undefined {
+  const match = /^(.*?)(?:cctv|교통\s*카메라|도로\s*카메라|교통\s*영상)(.*)$/iu.exec(text.normalize('NFKC').trim())
+  if (!match) return undefined
+  const clean = (value: string) => value
+    .replace(/^(?:(?:혹시|지금|현재|실시간|제발|그럼|그러면)\s+)+/u, '')
+    .replace(/(?:만|를|을)?\s*(?:열어\s*줘(?:요)?|열어\s*주세요|보여\s*줘(?:요)?|보여\s*주세요|틀어\s*줘(?:요)?|찾아\s*줘(?:요)?|찾아\s*주세요|보여|열기|조회|재생|검색|보고\s*싶어(?:요)?)[.!?\s]*$/u, '')
+    .replace(/(?:에\s*있는|에서|의|쪽|에|를|을|만)\s*$/u, '')
+    .replace(/^[\s"'“”‘’]+|[\s"'“”‘’.!?]+$/gu, '').trim()
+  const query = clean(match[1]) || clean(match[2])
+  if (!query || /^(?:(?:내|우리|현재|지금|주변|근처|가까운|위치|도로|교통|실시간|영상|좀|여기)\s*)+$/u.test(query)) return undefined
+  return query
 }
 
 function hasValidCoordinates(value: Coordinates): boolean {
@@ -198,7 +218,9 @@ export function getCurrentCoordinates(): Promise<Coordinates> {
   })
 }
 
-function parseCctv(value: unknown): NearbyCctv | undefined {
+function parseCctv(value: unknown): NearbyCctv | undefined
+function parseCctv(value: unknown, allowMissingDistance: true): CctvCamera | undefined
+function parseCctv(value: unknown, allowMissingDistance = false): CctvCamera | undefined {
   if (!value || typeof value !== 'object') return undefined
   const record = value as Record<string, unknown>
   const id = typeof record.id === 'string' ? record.id : undefined
@@ -218,8 +240,8 @@ function parseCctv(value: unknown): NearbyCctv | undefined {
 
   if (
     !id || !provider || !name || !streamUrl || latitude === undefined || longitude === undefined ||
-    distanceMeters === undefined || !hasValidCoordinates({ latitude, longitude }) ||
-    !Number.isFinite(distanceMeters) || distanceMeters < 0
+    (!allowMissingDistance && distanceMeters === undefined) || !hasValidCoordinates({ latitude, longitude }) ||
+    (distanceMeters !== undefined && (!Number.isFinite(distanceMeters) || distanceMeters < 0))
   ) {
     return undefined
   }
@@ -239,10 +261,11 @@ function parseCctv(value: unknown): NearbyCctv | undefined {
     name,
     latitude,
     longitude,
-    distanceMeters,
+    ...(distanceMeters === undefined ? {} : { distanceMeters }),
     streamUrl,
     format: format === 'hls' || format === 'mp4' || format === 'image' ? format : 'unknown',
     ...(typeof record.roadType === 'string' ? { roadType: record.roadType } : {}),
+    ...(typeof record.roadName === 'string' ? { roadName: record.roadName } : {}),
     ...(typeof record.roadSectionId === 'string' ? { roadSectionId: record.roadSectionId } : {}),
     ...(typeof record.updatedAt === 'string' ? { updatedAt: record.updatedAt } : {}),
   }
@@ -301,19 +324,33 @@ export async function fetchNearbyCctvs(
   const radiusKm = options.radiusKm ?? CCTV_RADIUS_METERS / 1_000
   const limit = options.limit ?? CCTV_LIMIT
 
+  const payload = await requestCctvPayload('/api/cctv/nearby', { ...coordinates, radiusKm, limit }, options.signal)
+  const result = normalizeResponse(payload)
+  return { ...result, cctvs: selectNearbyCctvs(result.cctvs, coordinates, radiusKm * 1_000, limit) }
+}
+
+export async function fetchCctvsByName(query: string, signal?: AbortSignal): Promise<CctvSearchResponse> {
+  const payload = await requestCctvPayload('/api/cctv/search', { query, limit: CCTV_LIMIT }, signal)
+  if (!payload || typeof payload !== 'object') throw new CctvClientError('invalid_response')
+  const body = payload as Record<string, unknown>
+  if (!Array.isArray(body.cctvs) || typeof body.query !== 'string' || typeof body.total !== 'number' ||
+    !Number.isInteger(body.total) || body.total < body.cctvs.length || body.cctvs.length > CCTV_LIMIT) {
+    throw new CctvClientError('invalid_response')
+  }
+  const cctvs = body.cctvs.map((value) => parseCctv(value, true)).filter((camera): camera is CctvCamera => Boolean(camera))
+  if (cctvs.length !== body.cctvs.length) throw new CctvClientError('invalid_response')
+  return { cctvs, query: body.query, total: body.total }
+}
+
+async function requestCctvPayload(path: string, body: object, signal?: AbortSignal): Promise<unknown> {
   try {
-    const response = await fetch('/api/cctv/nearby', {
+    const response = await fetch(path, {
       method: 'POST',
       credentials: 'same-origin',
       cache: 'no-store',
       headers: { 'content-type': 'application/json' },
-      signal: options.signal,
-      body: JSON.stringify({
-        latitude: coordinates.latitude,
-        longitude: coordinates.longitude,
-        radiusKm,
-        limit,
-      }),
+      signal,
+      body: JSON.stringify(body),
     })
     const bodyText = await response.text()
     let payload: unknown
@@ -337,11 +374,7 @@ export async function fetchNearbyCctvs(
       throw new CctvClientError(normalizedCode, undefined, response.status)
     }
 
-    const result = normalizeResponse(payload)
-    return {
-      ...result,
-      cctvs: selectNearbyCctvs(result.cctvs, coordinates, radiusKm * 1_000, limit),
-    }
+    return payload
   } catch (error) {
     if (error instanceof CctvClientError) throw error
     if (error instanceof DOMException && error.name === 'AbortError') throw error

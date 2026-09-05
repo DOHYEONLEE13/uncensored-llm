@@ -41,10 +41,12 @@ import {
   CCTV_LIMIT,
   CCTV_RADIUS_METERS,
   fetchNearbyCctvs,
+  fetchCctvsByName,
+  getCctvSearchQuery,
   getCurrentCoordinates,
   isExplicitCctvIntent,
   type Coordinates,
-  type NearbyCctv,
+  type CctvCamera,
 } from './cctv'
 
 type TokenUsage = {
@@ -65,7 +67,8 @@ type ChatMessage = {
   webSearchStatus?: WebSearchStatus
   webSearchSources?: WebSearchSource[]
   webSearchWarning?: string
-  cctvs?: NearbyCctv[]
+  cctvs?: CctvCamera[]
+  cctvSearch?: { query: string; total: number }
 }
 
 type Conversation = {
@@ -158,6 +161,7 @@ function getPersistableConversations(conversations: Conversation[]): Conversatio
     messages: conversation.messages.map((message) => {
       const persistedMessage = { ...message }
       delete persistedMessage.cctvs
+      delete persistedMessage.cctvSearch
       return persistedMessage
     }),
   }))
@@ -685,6 +689,7 @@ function MessageList({
                 {message.cctvs && (
                   <CctvResults
                     cctvs={message.cctvs}
+                    search={message.cctvSearch}
                     coordinates={cctvLocation?.messageId === message.id ? cctvLocation.coordinates : undefined}
                   />
                 )}
@@ -1024,6 +1029,7 @@ export default function App() {
   const submitCctvMessage = async (content: string) => {
     const normalizedContent = content.trim()
     if (!normalizedContent || isThinking) return
+    const searchQuery = getCctvSearchQuery(normalizedContent)
 
     const operationGeneration = operationGenerationRef.current + 1
     setCctvLocation(null)
@@ -1048,12 +1054,26 @@ export default function App() {
     setMessages(requestMessages)
     setDraft('')
     setIsThinking(true)
-    setPendingLabel('현재 위치를 확인 중…')
+    setPendingLabel(searchQuery ? '요청한 도로의 CCTV를 찾는 중…' : '현재 위치를 확인 중…')
     cctvRequestControllerRef.current = controller
     setComposerToolsOpen(false)
     setOpenModelPicker(null)
 
     try {
+      if (searchQuery) {
+        const result = await fetchCctvsByName(searchQuery, controller.signal)
+        if (controller.signal.aborted || operationGenerationRef.current !== operationGeneration) return
+        setMessages((current) => [...current, {
+          id: assistantId, role: 'assistant',
+          content: result.total
+            ? `“${result.query}”에 일치하는 ITS CCTV ${result.total}곳${result.total > result.cctvs.length ? ` 중 ${result.cctvs.length}곳` : ''}입니다.`
+            : `“${result.query}”에 일치하는 ITS CCTV를 찾지 못했습니다. 도로명이나 CCTV 이름을 확인해 주세요.`,
+          tokenEstimate: 32,
+          cctvs: result.cctvs,
+          cctvSearch: { query: result.query, total: result.total },
+        }])
+        return
+      }
       const coordinates = await getCurrentCoordinates()
       if (operationGenerationRef.current !== operationGeneration) return
 

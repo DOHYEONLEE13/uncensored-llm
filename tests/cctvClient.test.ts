@@ -4,6 +4,8 @@ import test from 'node:test'
 import {
   CctvClientError,
   fetchNearbyCctvs,
+  fetchCctvsByName,
+  getCctvSearchQuery,
   getCurrentCoordinates,
   isExplicitCctvIntent,
   selectNearbyCctvs,
@@ -17,6 +19,41 @@ test('only explicit camera requests route to the CCTV feature', () => {
   assert.equal(isExplicitCctvIntent('실시간 도로 영상 볼 수 있어?'), true)
   assert.equal(isExplicitCctvIntent('서울 교통 상황이 어때?'), false)
   assert.equal(isExplicitCctvIntent('이번 주말 여행 일정 만들어줘'), false)
+})
+
+test('extracts named roads and cameras while keeping generic nearby requests', () => {
+  for (const [text, query] of [
+    ['올림픽대로 CCTV 열어줘', '올림픽대로'],
+    ['강남대로의 cctv만 보여줘', '강남대로'],
+    ['지금 테헤란로에 있는 CCTV 보여주세요', '테헤란로'],
+    ['CCTV 경부고속도로 열어줘', '경부고속도로'],
+    ['“동부간선도로” CCTV를 틀어줘', '동부간선도로'],
+    ['내부순환로 CCTV 보여줘', '내부순환로'],
+  ]) assert.equal(getCctvSearchQuery(text), query, text)
+  for (const text of ['내 주변 CCTV 보여줘', '근처 cctv 열어줘', 'CCTV 열어줘', '주변 도로 CCTV 보여줘']) {
+    assert.equal(getCctvSearchQuery(text), undefined, text)
+  }
+})
+
+test('road search sends only the query and accepts real cameras without invented user distances', async () => {
+  const originalFetch = globalThis.fetch
+  let body: unknown
+  globalThis.fetch = async (path, options) => {
+    assert.equal(path, '/api/cctv/search')
+    assert.equal(options?.method, 'POST')
+    body = JSON.parse(String(options?.body))
+    return Response.json({ query: '올림픽대로', total: 1, cctvs: [{
+      id: 'ITS:road', provider: 'ITS', name: '[올림픽대로] 청담',
+      latitude: 37, longitude: 127, streamUrl: 'https://example.test/live.m3u8', format: 'hls',
+    }] })
+  }
+  try {
+    const result = await fetchCctvsByName('올림픽대로')
+    assert.deepEqual(body, { query: '올림픽대로', limit: 20 })
+    assert.equal(result.cctvs.length, 1)
+    assert.equal(result.cctvs[0].distanceMeters, undefined)
+    assert.equal(result.query, '올림픽대로')
+  } finally { globalThis.fetch = originalFetch }
 })
 
 test('posts coordinates in the request body and normalizes a nearby CCTV response', async () => {

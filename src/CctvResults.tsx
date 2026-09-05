@@ -1,7 +1,7 @@
 import { Component, lazy, Suspense, useId, useMemo, useState, type ReactNode } from 'react'
 import { MapPin, Radio, Video, X } from 'lucide-react'
-import { formatCctvDistance, formatCctvRoadType, selectNearbyCctvs, type Coordinates, type NearbyCctv } from './cctv'
-import CctvVideo from './CctvVideo'
+import { formatCctvDistance, formatCctvRoadType, selectNearbyCctvs, type Coordinates, type NearbyCctv, type CctvCamera } from './cctv'
+import CctvVideoDialog from './CctvVideoDialog'
 import type { MapProviderLoader } from './mapProvider'
 
 const CctvMap = lazy(() => import('./CctvMap'))
@@ -18,65 +18,66 @@ class MapBoundary extends Component<{ children: ReactNode }, { failed: boolean }
 }
 
 type CctvResultsProps = {
-  cctvs: NearbyCctv[]
+  cctvs: CctvCamera[]
+  search?: { query: string; total: number }
   coordinates?: Coordinates
   loadMapProvider?: MapProviderLoader
 }
 
-function SelectedCctv({ cctv, onClose }: { cctv: NearbyCctv; onClose(): void }) {
+function SelectedCctv({ cctv, onClose }: { cctv: CctvCamera; onClose(): void }) {
   const [playing, setPlaying] = useState(false)
-  const videoId = useId()
   return (
     <div className="cctv-selected-panel" aria-label="선택한 CCTV">
       <div className="cctv-selected-heading">
         <span className="cctv-provider">{cctv.provider}</span>
         <div className="min-w-0 flex-1" aria-live="polite">
           <h3>{cctv.name}</h3>
-          <p>직선 {formatCctvDistance(cctv.distanceMeters)} · {formatCctvRoadType(cctv.roadType)}</p>
+          <p>{cctv.distanceMeters !== undefined && `직선 ${formatCctvDistance(cctv.distanceMeters)} · `}{formatCctvRoadType(cctv.roadType)}</p>
         </div>
         <button type="button" className="cctv-close" aria-label="CCTV 선택 닫기" onClick={onClose}><X className="size-4" aria-hidden="true" /></button>
       </div>
-      <button type="button" className="cctv-action" aria-label={`${cctv.name} 영상 ${playing ? '닫기' : '보기'}`} aria-expanded={playing} aria-controls={videoId} onClick={() => setPlaying((value) => !value)}>
-        <Video className="size-4" aria-hidden="true" /> 영상 {playing ? '닫기' : '보기'}
+      <button type="button" className="cctv-action" aria-label={`${cctv.name} CCTV 접근`} aria-haspopup="dialog" onClick={() => setPlaying(true)}>
+        <Video className="size-4" aria-hidden="true" /> CCTV 접근
       </button>
-      <div id={videoId}>{playing && <CctvVideo cctv={cctv} />}</div>
+      {playing && <CctvVideoDialog cctv={cctv} onClose={() => setPlaying(false)} />}
     </div>
   )
 }
 
-export function CctvResults({ cctvs, coordinates, loadMapProvider }: CctvResultsProps) {
+export function CctvResults({ cctvs, coordinates, search, loadMapProvider }: CctvResultsProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const nearby = useMemo(() => selectNearbyCctvs(cctvs, coordinates), [cctvs, coordinates])
-  const selected = nearby.find((cctv) => cctv.id === selectedId)
+  const nearby = useMemo(() => selectNearbyCctvs(cctvs.filter((camera): camera is NearbyCctv => camera.distanceMeters !== undefined), coordinates), [cctvs, coordinates])
+  const cameras = search ? cctvs : nearby
+  const selected = cameras.find((cctv) => cctv.id === selectedId)
   const panelId = useId()
 
   return (
-    <section className="cctv-results" aria-label="주변 도로 CCTV">
+    <section className="cctv-results" aria-label={search ? `${search.query} CCTV 검색 결과` : '주변 도로 CCTV'}>
       <div className="cctv-results-heading">
         <Radio className="size-4 shrink-0" aria-hidden="true" />
-        <span>반경 2km · CCTV {nearby.length}곳</span>
+        <span>{search ? `“${search.query}” · CCTV ${search.total}곳` : `반경 2km · CCTV ${nearby.length}곳`}</span>
         <span className="cctv-provider">ITS</span>
       </div>
-      <MapBoundary>
+      {!search && <MapBoundary>
         <Suspense fallback={<div className="cctv-map-frame cctv-map-status" role="status">지도를 불러오는 중…</div>}>
           <CctvMap coordinates={coordinates} cctvs={nearby} selectedId={selected?.id ?? null} onSelect={setSelectedId} loadProvider={loadMapProvider} />
         </Suspense>
-      </MapBoundary>
+      </MapBoundary>}
       <div id={panelId}>
         {selected && <SelectedCctv key={selected.id} cctv={selected} onClose={() => setSelectedId(null)} />}
       </div>
-      {nearby.length === 0 ? (
-        <p className="cctv-empty" role="status">현재 위치 반경 2km 안에서 제공 중인 ITS 도로 CCTV를 찾지 못했습니다.</p>
+      {cameras.length === 0 ? (
+        <p className="cctv-empty" role="status">{search ? '일치하는 도로명이나 CCTV 이름이 없습니다. ITS에서 제공하는 이름으로 다시 검색해 주세요.' : '현재 위치 반경 2km 안에서 제공 중인 ITS 도로 CCTV를 찾지 못했습니다.'}</p>
       ) : (
         <>
-          <p className="cctv-list-caption">가까운 순 · 조회 당시 위치 기준 직선거리</p>
-          <ul className="cctv-list" aria-label="거리순 CCTV 목록">
-            {nearby.map((cctv) => (
+          <p className="cctv-list-caption">{search ? `도로명·CCTV 이름 일치 결과${search.total > cameras.length ? ` · ${cameras.length}곳 표시, 더 구체적인 이름으로 좁힐 수 있습니다` : ''}` : '가까운 순 · 조회 당시 위치 기준 직선거리'}</p>
+          <ul className="cctv-list" aria-label={search ? '도로명 CCTV 검색 목록' : '거리순 CCTV 목록'}>
+            {cameras.map((cctv) => (
               <li key={cctv.id}>
-                <button type="button" className="cctv-list-button" aria-label={`${cctv.name}, 직선 ${formatCctvDistance(cctv.distanceMeters)}, 선택`} aria-pressed={selected?.id === cctv.id} aria-controls={panelId} onClick={() => setSelectedId(cctv.id)}>
+                <button type="button" className="cctv-list-button" aria-label={`${cctv.name}${cctv.distanceMeters !== undefined ? `, 직선 ${formatCctvDistance(cctv.distanceMeters)}` : ''}, 선택`} aria-pressed={selected?.id === cctv.id} aria-controls={panelId} onClick={() => setSelectedId(cctv.id)}>
                   <MapPin className="size-4 shrink-0" aria-hidden="true" />
                   <span className="cctv-list-name">{cctv.name}<span>{formatCctvRoadType(cctv.roadType)}</span></span>
-                  <span className="cctv-list-distance">{formatCctvDistance(cctv.distanceMeters)}</span>
+                  {cctv.distanceMeters !== undefined && <span className="cctv-list-distance">{formatCctvDistance(cctv.distanceMeters)}</span>}
                 </button>
               </li>
             ))}

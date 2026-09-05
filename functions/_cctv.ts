@@ -1,3 +1,5 @@
+import { parseCctvSearchInput, searchCctvs, type CctvSearchInput } from '../server/cctvSearch'
+
 export type CctvProviderId = 'ITS' | 'UTIC'
 export type ItsRoadType = 'ex' | 'its'
 export type CctvFormat = 'hls' | 'mp4' | 'image' | 'unknown'
@@ -873,6 +875,13 @@ export function createCloudflareCctvService({
   }
 
   return {
+    async search(input: CctvSearchInput, scheduleBackground?: (promise: Promise<unknown>) => void) {
+      const cached = await getSnapshot(scheduleBackground)
+      return {
+        ...searchCctvs(cached.snapshot.cctvs, input),
+        cache: { state: cached.state, updatedAt: cached.snapshot.updatedAt },
+      }
+    },
     async getNearby(
       input: NearbyCctvInput,
       scheduleBackground?: (promise: Promise<unknown>) => void,
@@ -982,7 +991,7 @@ async function readRequestBody(request: Request) {
   }
 }
 
-export async function handleNearbyCctvRequest(context: CctvPagesContext) {
+export async function handleNearbyCctvRequest(context: CctvPagesContext, mode: 'nearby' | 'search' = 'nearby') {
   const { request, env } = context
   if (request.method !== 'POST') {
     return json(
@@ -994,7 +1003,12 @@ export async function handleNearbyCctvRequest(context: CctvPagesContext) {
 
   try {
     const payload = await readRequestBody(request)
-    const input = parseNearbyCctvInput(payload)
+    let searchInput: CctvSearchInput | undefined
+    if (mode === 'search') {
+      try { searchInput = parseCctvSearchInput(payload) }
+      catch { throw new CctvServiceError('검색할 도로명은 2~80자로 입력해 주세요.', 'invalid_request', 400) }
+    }
+    const nearbyInput = searchInput ? undefined : parseNearbyCctvInput(payload)
     const apiKey = getItsApiKey(env)
     if (!apiKey) {
       throw new CctvServiceError(
@@ -1007,7 +1021,9 @@ export async function handleNearbyCctvRequest(context: CctvPagesContext) {
     const scheduleBackground = context.waitUntil
       ? (promise: Promise<unknown>) => context.waitUntil?.(promise)
       : undefined
-    const result = await service.getNearby(input, scheduleBackground)
+    const result = searchInput
+      ? await service.search(searchInput, scheduleBackground)
+      : await service.getNearby(nearbyInput!, scheduleBackground)
     return json(result)
   } catch (error) {
     const normalized =

@@ -74,11 +74,11 @@ test('map/list share selection, marker selection opens the panel, and switching 
     assert.equal(view.host.querySelector('video'), null)
     await click(view.host.querySelector('.cctv-selected-panel .cctv-action'))
     await settle()
-    assert.equal(view.host.querySelector('video')?.getAttribute('aria-label'), `${camera.name} CCTV 영상`)
+    assert.equal(dom.document.querySelector('dialog video')?.getAttribute('aria-label'), `${camera.name} CCTV 영상`)
     await click(view.host.querySelectorAll('.cctv-list-button')[1])
     assert.equal(sdk.selections.at(-1), second.id)
     assert.equal(destroy.mock.callCount(), 1)
-    assert.equal(view.host.querySelector('video'), null)
+    assert.equal(dom.document.querySelector('dialog'), null)
     await click(view.host.querySelector('.cctv-selected-panel .cctv-action'))
     await settle()
     await act(async () => sdk.select(camera.id))
@@ -89,6 +89,41 @@ test('map/list share selection, marker selection opens the panel, and switching 
     assert.equal(view.host.innerHTML.includes('37.001'), false)
   } finally { await view.dispose() }
   assert.equal(sdk.destroyed, 1)
+})
+
+test('CCTV access opens a modal, closes playback, and restores focus and scrolling', async (t) => {
+  t.mock.method(Hls, 'isSupported', () => true)
+  t.mock.method(Hls.prototype, 'loadSource', () => undefined)
+  t.mock.method(Hls.prototype, 'attachMedia', () => undefined)
+  const destroy = t.mock.method(Hls.prototype, 'destroy', () => undefined)
+  const { distanceMeters: _distance, ...namedCamera } = camera
+  const view = await mount(createElement(CctvResults, { cctvs: [namedCamera], search: { query: camera.name, total: 1 } }))
+  try {
+    assert.equal(view.host.querySelector('.cctv-map-frame'), null)
+    assert.doesNotMatch(view.host.textContent, /직선|2km/)
+    await click(view.host.querySelector('.cctv-list-button'))
+    const access = view.host.querySelector('.cctv-action')!
+    assert.match(access.textContent, /CCTV 접근/)
+    access.focus()
+    await click(access)
+    await settle()
+    const dialog = dom.document.querySelector('dialog')!
+    assert.equal(dialog.open, true)
+    assert.equal(dialog.parentElement, dom.document.body)
+    assert.equal(dialog.querySelector('video')?.autoplay, true)
+    assert.equal(dialog.querySelector('video')?.muted, true)
+    assert.equal(dom.document.activeElement?.getAttribute('aria-label'), 'CCTV 영상 팝업 닫기')
+    assert.equal(dom.document.body.style.overflow, 'hidden')
+    await click(dialog.querySelector('button'))
+    assert.equal(dom.document.querySelector('dialog'), null)
+    assert.equal(destroy.mock.callCount(), 1)
+    assert.equal(dom.document.activeElement, access)
+    assert.equal(dom.document.body.style.overflow, '')
+    await click(access)
+    await act(async () => { dom.document.querySelector('dialog')!.dispatchEvent(new dom.Event('cancel', { bubbles: false, cancelable: true })) })
+    assert.equal(dom.document.querySelector('dialog'), null)
+    assert.equal(destroy.mock.callCount(), 2)
+  } finally { await view.dispose() }
 })
 
 test('SDK load and runtime failures leave the CCTV list usable and allow a map-only retry', async () => {

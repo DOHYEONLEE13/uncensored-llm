@@ -34,6 +34,7 @@ const settle = async () => { await act(async () => { await new Promise((resolve)
 async function setup(
   getPosition: (success: PositionCallback, failure: PositionErrorCallback) => void,
   nearbyFailure?: () => Response,
+  searchText?: string,
 ) {
   dom.localStorage.clear()
   const originalFetch = globalThis.fetch
@@ -43,6 +44,10 @@ async function setup(
     if (url === '/api/status') return Response.json({ configured: true, model: 'obsidian/Qwen3.8-27B' })
     requests.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null })
     if (url === '/api/cctv/nearby' && nearbyFailure) return nearbyFailure()
+    if (url === '/api/cctv/search') return Response.json({ query: '올림픽대로', total: 1, cctvs: [{
+      id: 'ITS:road', provider: 'ITS', name: '[올림픽대로] 청담',
+      latitude: 37, longitude: 127, streamUrl: 'https://example.test/live.m3u8', format: 'hls',
+    }] })
     if (url === '/api/cctv/nearby') return Response.json({ cctvs: [{
       id: 'ITS:test', provider: 'ITS', name: '테스트 도로', providerId: 'test',
       latitude: 37.124, longitude: 127.124, distanceMeters: 78,
@@ -66,8 +71,19 @@ async function setup(
     await act(async () => button.click())
     await settle()
   }
-  await click('채팅 도구 열기')
-  await click('현재 위치에서 가까운 ITS 도로 CCTV 찾기')
+  if (searchText) {
+    const textarea = host.querySelector('textarea')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(dom.HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, searchText)
+      textarea.dispatchEvent(new dom.Event('input', { bubbles: true }))
+      textarea.dispatchEvent(new dom.Event('change', { bubbles: true }))
+    })
+    await act(async () => textarea.closest('form')!.dispatchEvent(new dom.Event('submit', { bubbles: true, cancelable: true })))
+    await settle()
+  } else {
+    await click('채팅 도구 열기')
+    await click('현재 위치에서 가까운 ITS 도로 CCTV 찾기')
+  }
   for (let i = 0; i < 10 && !host.querySelector('.cctv-results') && requests.length; i++) await settle()
   return {
     host, requests, click, get locationReads() { return locationReads },
@@ -92,6 +108,18 @@ test('CCTV button reads GPS once, posts 2km/20, and never saves GPS or CCTV data
     for (let i = 0; i < 20 && !view.host.querySelector('.cctv-results'); i++) await settle()
     assert.match(view.host.textContent, /이전 조회의 위치는 보관하지 않습니다/)
     assert.equal(view.locationReads, 1)
+  } finally { await view.dispose() }
+})
+
+test('named road chat searches only that road without asking for GPS or calling AI chat', async () => {
+  const view = await setup(() => { throw new Error('Named road searches must not ask for location') }, undefined, '올림픽대로 CCTV 열어줘')
+  try {
+    assert.equal(view.locationReads, 0)
+    assert.deepEqual(view.requests, [{ url: '/api/cctv/search', body: { query: '올림픽대로', limit: 20 } }])
+    assert.match(view.host.textContent, /올림픽대로.*일치하는 ITS CCTV 1곳/)
+    assert.equal(view.host.querySelectorAll('.cctv-list-button').length, 1)
+    assert.equal(view.host.querySelector('.cctv-map-frame'), null)
+    assert.doesNotMatch(dom.localStorage.getItem('mira-conversations') || '', /latitude|longitude|streamUrl|cctvs|cctvSearch/)
   } finally { await view.dispose() }
 })
 

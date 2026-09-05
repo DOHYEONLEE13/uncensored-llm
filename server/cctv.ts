@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { parseCctvSearchInput, searchCctvs, type CctvSearchInput } from './cctvSearch.js'
 
 export type CctvProviderId = 'ITS' | 'UTIC'
 export type ItsRoadType = 'ex' | 'its'
@@ -785,6 +786,13 @@ export function createProcessCctvService({
   }
 
   return {
+    async search(input: CctvSearchInput) {
+      const cached = await getSnapshot()
+      return {
+        ...searchCctvs(cached.snapshot.cctvs, input),
+        cache: { state: cached.state, updatedAt: cached.snapshot.updatedAt },
+      }
+    },
     async getNearby(input: NearbyCctvInput): Promise<NearbyCctvResult> {
       const cached = await getSnapshot()
       return {
@@ -848,6 +856,7 @@ async function readRequestBody(request: IncomingMessage) {
 export async function handleNearbyCctvRequest(
   request: IncomingMessage,
   response: ServerResponse,
+  mode: 'nearby' | 'search' = 'nearby',
 ) {
   if (request.method !== 'POST') {
     sendJson(
@@ -861,8 +870,15 @@ export async function handleNearbyCctvRequest(
 
   try {
     const payload = await readRequestBody(request)
-    const input = parseNearbyCctvInput(payload)
-    const result = await getDefaultService().getNearby(input)
+    let searchInput: CctvSearchInput | undefined
+    if (mode === 'search') {
+      try { searchInput = parseCctvSearchInput(payload) }
+      catch { throw new CctvServiceError('검색할 도로명은 2~80자로 입력해 주세요.', 'invalid_request', 400) }
+    }
+    const nearbyInput = searchInput ? undefined : parseNearbyCctvInput(payload)
+    const result = searchInput
+      ? await getDefaultService().search(searchInput)
+      : await getDefaultService().getNearby(nearbyInput!)
     sendJson(response, 200, result)
   } catch (error) {
     const normalized =

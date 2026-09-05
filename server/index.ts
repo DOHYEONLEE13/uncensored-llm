@@ -110,8 +110,8 @@ const server = createServer(async (request, response) => {
     return
   }
 
-  if (requestUrl.pathname === '/api/cctv/nearby') {
-    await handleNearbyCctvRequest(request, response)
+  if (requestUrl.pathname === '/api/cctv/nearby' || requestUrl.pathname === '/api/cctv/search') {
+    await handleNearbyCctvRequest(request, response, requestUrl.pathname.endsWith('/search') ? 'search' : 'nearby')
     return
   }
 

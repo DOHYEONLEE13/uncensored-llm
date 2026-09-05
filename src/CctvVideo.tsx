@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { AlertCircle } from 'lucide-react'
-import type { NearbyCctv } from './cctv'
+import type { CctvCamera } from './cctv'
 
 const PLAYBACK_ERROR = '현재 CCTV 영상을 불러올 수 없습니다.'
 
 /** Keep native Safari HLS first, and load hls.js only after opening a video. */
-export default function CctvVideo({ cctv }: { cctv: NearbyCctv }) {
+export default function CctvVideo({ cctv, autoPlay = false }: { cctv: CctvCamera; autoPlay?: boolean }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [playbackError, setPlaybackError] = useState(false)
   const mixedContent = window.location.protocol === 'https:' && cctv.streamUrl.startsWith('http:')
@@ -57,7 +57,7 @@ export default function CctvVideo({ cctv }: { cctv: NearbyCctv }) {
     <div className="cctv-video">
       {!mixedContent && (cctv.format === 'image'
         ? !playbackError && <img src={cctv.streamUrl} alt={`${cctv.name} CCTV`} loading="lazy" onError={() => setPlaybackError(true)} />
-        : <video ref={videoRef} controls playsInline preload="none" onError={() => setPlaybackError(true)} aria-label={`${cctv.name} CCTV 영상`} />)}
+        : <video ref={videoRef} controls playsInline autoPlay={autoPlay} muted={autoPlay} preload={autoPlay ? 'auto' : 'none'} onError={() => setPlaybackError(true)} aria-label={`${cctv.name} CCTV 영상`} />)}
       {(playbackError || mixedContent) && (
         <p className="cctv-video-error" role="status"><AlertCircle className="size-4 shrink-0" aria-hidden="true" />{PLAYBACK_ERROR}</p>
       )}

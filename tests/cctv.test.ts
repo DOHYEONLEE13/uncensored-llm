@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
+import { parseCctvSearchInput, searchCctvs } from '../server/cctvSearch.js'
+import { onRequest as searchRoute } from '../functions/api/cctv/search.js'
 
 import {
   CctvServiceError as NodeCctvServiceError,
@@ -104,6 +106,43 @@ class MemoryCache implements CctvCache {
 }
 
 const flushPromises = () => new Promise<void>((resolve) => setImmediate(resolve))
+
+describe('named CCTV search', () => {
+  test('matches only requested names across the catalog, before limiting results', async () => {
+    const catalog = [
+      ...Array.from({ length: 25 }, (_, i) => nodeCctv({ id: `other:${i}`, name: `다른 도로 ${i}` })),
+      nodeCctv({ id: 'road:one', name: '[올림픽대로] 청담', latitude: 35 }),
+      nodeCctv({ id: 'road:two', name: '교차로', roadName: '올림픽대로', latitude: 36 }),
+    ]
+    for (const edge of [false, true]) {
+      let loads = 0
+      const provider: NodeCctvProvider = { id: 'ITS', async fetchCctvs() { loads++; return catalog } }
+      const service = edge ? createCloudflareCctvService({ provider, cache: new MemoryCache() }) : createProcessCctvService({ provider })
+      await service.getNearby(parseNodeNearbyCctvInput({ latitude: 37, longitude: 127, radiusKm: 2, limit: 20 }))
+      const result = await service.search(parseCctvSearchInput({ query: '올림픽 대로' }))
+      assert.equal(result.total, 2)
+      assert.deepEqual(result.cctvs.map((cctv) => cctv.id).sort(), ['road:one', 'road:two'])
+      assert.ok(result.cctvs.every((cctv) => !('distanceMeters' in cctv)))
+      assert.deepEqual((await service.search({ query: '없는도로', limit: 20 })).cctvs, [])
+      assert.equal(loads, 1)
+    }
+    const highway = nodeCctv({ name: '[경부선] 신갈' })
+    assert.equal(searchCctvs([highway], { query: '경부고속도로', limit: 20 }).total, 1)
+  })
+
+  test('validates road searches without requiring coordinates or accessing the provider', async () => {
+    for (const payload of [{ query: '' }, { query: '가' }, { query: '가'.repeat(81) }, { query: '도로', limit: 21 }, { query: [] }]) {
+      const response = await searchRoute({ request: new Request('https://mira.test/api/cctv/search', {
+        method: 'POST', body: JSON.stringify(payload),
+      }), env: {} })
+      assert.equal(response.status, 400)
+      assert.equal((await response.json() as { error: { code: string } }).error.code, 'invalid_request')
+    }
+    assert.deepEqual(parseCctvSearchInput({ query: ' 올림픽대로 ' }), { query: '올림픽대로', limit: 20 })
+    const response = await searchRoute({ request: new Request('https://mira.test/api/cctv/search'), env: {} })
+    assert.equal(response.status, 405)
+  })
+})
 
 describe('ITS response normalization', () => {
   test('normalizes defensive JSON and XML shapes identically in Node and Functions', () => {
