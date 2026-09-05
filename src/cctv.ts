@@ -86,6 +86,15 @@ export type CctvClientErrorCode =
   | 'network_error'
   | 'request_failed'
   | 'service_unavailable'
+  | 'configuration_error'
+  | 'its_connection_error'
+  | 'its_timeout'
+  | 'its_http_error'
+  | 'its_api_error'
+  | 'its_invalid_response'
+  | 'its_empty_response'
+  | 'cctv_cache_unavailable'
+  | 'cctv_service_error'
 
 const ERROR_MESSAGES: Record<CctvClientErrorCode, string> = {
   location_denied: '주변 CCTV를 찾으려면 위치 권한이 필요합니다.',
@@ -97,6 +106,15 @@ const ERROR_MESSAGES: Record<CctvClientErrorCode, string> = {
   network_error: 'CCTV 서비스에 연결할 수 없습니다. 네트워크를 확인해 주세요.',
   request_failed: '주변 CCTV를 불러오지 못했습니다.',
   service_unavailable: '현재 CCTV 서비스를 이용할 수 없습니다.',
+  configuration_error: 'CCTV 서비스 인증 설정이 누락되어 있습니다. 관리자에게 문의해 주세요.',
+  its_connection_error: 'CCTV 제공 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+  its_timeout: 'CCTV 조회 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.',
+  its_http_error: 'CCTV 제공 서버가 요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+  its_api_error: 'CCTV 제공 서비스의 인증 또는 요청 처리에 문제가 있습니다. 관리자에게 문의해 주세요.',
+  its_invalid_response: 'CCTV 제공 서버에서 올바른 정보를 받지 못했습니다. 잠시 후 다시 시도해 주세요.',
+  its_empty_response: 'CCTV 제공 서버에서 정보를 받지 못했습니다. 잠시 후 다시 시도해 주세요.',
+  cctv_cache_unavailable: 'CCTV 정보를 준비하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+  cctv_service_error: '현재 CCTV 서비스를 이용할 수 없습니다.',
 }
 
 export class CctvClientError extends Error {
@@ -108,7 +126,9 @@ export class CctvClientError extends Error {
     message?: string,
     status?: number,
   ) {
-    super(message || ERROR_MESSAGES[code as CctvClientErrorCode] || ERROR_MESSAGES.request_failed)
+    super(message || (Object.hasOwn(ERROR_MESSAGES, code)
+      ? ERROR_MESSAGES[code as CctvClientErrorCode]
+      : ERROR_MESSAGES.request_failed))
     this.name = 'CctvClientError'
     this.code = code
     this.status = status
@@ -307,10 +327,10 @@ export async function fetchNearbyCctvs(
       const payloadRecord = payload && typeof payload === 'object'
         ? payload as Record<string, unknown>
         : undefined
-      const code = typeof payloadRecord?.error === 'object'
+      const code = payloadRecord?.error && typeof payloadRecord.error === 'object'
         ? (payloadRecord.error as Record<string, unknown>).code
         : payloadRecord?.type
-      const normalizedCode = typeof code === 'string' ? code :
+      const normalizedCode = typeof code === 'string' && Object.hasOwn(ERROR_MESSAGES, code) ? code :
         response.status === 503 ? 'service_unavailable' : 'request_failed'
       // Never put an upstream diagnostic (which could contain GPS or credentials)
       // into a chat message or its persisted history.

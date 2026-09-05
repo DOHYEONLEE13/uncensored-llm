@@ -491,7 +491,7 @@ export class ItsCctvProvider implements CctvProvider {
 
   constructor(apiKey: string, fetchImplementation: typeof fetch = fetch) {
     this.apiKey = apiKey
-    this.fetchImplementation = fetchImplementation
+    this.fetchImplementation = fetchImplementation.bind(globalThis)
   }
 
   private async fetchRoadType(roadType: ItsRoadType) {
@@ -512,7 +512,14 @@ export class ItsCctvProvider implements CctvProvider {
         headers: { Accept: 'application/json, application/xml;q=0.9, text/xml;q=0.8' },
         signal: AbortSignal.timeout(ITS_REQUEST_TIMEOUT_MILLISECONDS),
       })
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+        throw new CctvServiceError(
+          'ITS CCTV 서비스 연결 시간이 초과되었습니다.',
+          'its_timeout',
+          504,
+        )
+      }
       throw new CctvServiceError(
         'ITS CCTV 서비스에 연결할 수 없습니다.',
         'its_connection_error',

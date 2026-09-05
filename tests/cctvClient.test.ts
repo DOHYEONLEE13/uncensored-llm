@@ -107,6 +107,47 @@ test('surfaces a structured CCTV API failure', async () => {
   }
 })
 
+test('distinguishes deployed configuration and ITS failures without exposing diagnostics', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    for (const [code, expected] of [
+      ['configuration_error', 'CCTV 서비스 인증 설정이 누락되어 있습니다. 관리자에게 문의해 주세요.'],
+      ['its_connection_error', 'CCTV 제공 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.'],
+      ['its_timeout', 'CCTV 조회 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.'],
+      ['its_http_error', 'CCTV 제공 서버가 요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.'],
+    ]) {
+      globalThis.fetch = async () => Response.json({ error: {
+        code, message: 'private-key=secret-test latitude=37.123456 longitude=127.123456',
+      } }, { status: 503 })
+      await assert.rejects(fetchNearbyCctvs({ latitude: 37, longitude: 127 }), (error: unknown) => {
+        assert.ok(error instanceof CctvClientError)
+        assert.equal(error.code, code)
+        assert.equal(error.message, expected)
+        assert.equal(error.status, 503)
+        return true
+      })
+    }
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('malformed or unknown API errors keep the HTTP failure classification', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    for (const body of [
+      { error: null }, { error: { code: 'new_upstream_error' } },
+      { error: { code: 'toString' } }, { error: { code: '__proto__' } },
+    ]) {
+      globalThis.fetch = async () => Response.json(body, { status: 503 })
+      await assert.rejects(fetchNearbyCctvs({ latitude: 37, longitude: 127 }), (error: unknown) => {
+        assert.ok(error instanceof CctvClientError)
+        assert.equal(error.code, 'service_unavailable')
+        assert.equal(error.message, '현재 CCTV 서비스를 이용할 수 없습니다.')
+        return true
+      })
+    }
+  } finally { globalThis.fetch = originalFetch }
+})
+
 test('turns denied browser geolocation into a recoverable UI error', async () => {
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
   Object.defineProperty(globalThis, 'navigator', {

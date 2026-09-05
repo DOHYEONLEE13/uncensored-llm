@@ -172,6 +172,42 @@ describe('ITS response normalization', () => {
 })
 
 describe('ITS provider requests', () => {
+  test('preserves the global receiver required by native Cloudflare fetch', async () => {
+    const originalFetch = globalThis.fetch
+    try {
+      let calls = 0
+      globalThis.fetch = async function (this: unknown) {
+        if (this !== globalThis) throw new TypeError('Illegal invocation')
+        calls++
+        return new Response(JSON_FIXTURE)
+      }
+      for (const Provider of [NodeItsCctvProvider, WorkerItsCctvProvider] as const) {
+        const cctvs = await new Provider('test-secret').fetchCctvs()
+        assert.equal(cctvs.length, 2)
+        assert.equal(cctvs.partial, undefined)
+      }
+      assert.equal(calls, 4)
+    } finally { globalThis.fetch = originalFetch }
+  })
+
+  test('distinguishes timeout from connection failure without returning native diagnostics', async () => {
+    for (const Provider of [NodeItsCctvProvider, WorkerItsCctvProvider] as const) {
+      for (const [failure, type, status] of [
+        [new DOMException('private-key or coordinates', 'TimeoutError'), 'its_timeout', 504],
+        [new TypeError('private-key or coordinates'), 'its_connection_error', 503],
+      ] as const) {
+        const provider = new Provider('test-secret', async () => { throw failure })
+        await assert.rejects(provider.fetchCctvs(), (error: unknown) => {
+          assert.ok(error instanceof NodeCctvServiceError || error instanceof WorkerCctvServiceError)
+          assert.equal(error.type, type)
+          assert.equal(error.status, status)
+          assert.doesNotMatch(error.message, /private-key|coordinates/)
+          return true
+        })
+      }
+    }
+  })
+
   test('uses the official HTTPS HLS contract and keeps a partial road-type success', async () => {
     for (const Provider of [NodeItsCctvProvider, WorkerItsCctvProvider] as const) {
       const urls: URL[] = []

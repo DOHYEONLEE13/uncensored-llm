@@ -31,7 +31,10 @@ after(async () => {
 const coordinates = { latitude: 37.123456, longitude: 127.123456 }
 const settle = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) }) }
 
-async function setup(getPosition: (success: PositionCallback, failure: PositionErrorCallback) => void) {
+async function setup(
+  getPosition: (success: PositionCallback, failure: PositionErrorCallback) => void,
+  nearbyFailure?: () => Response,
+) {
   dom.localStorage.clear()
   const originalFetch = globalThis.fetch
   const requests: { url: string; body: unknown }[] = []
@@ -39,6 +42,7 @@ async function setup(getPosition: (success: PositionCallback, failure: PositionE
     const url = String(input)
     if (url === '/api/status') return Response.json({ configured: true, model: 'obsidian/Qwen3.8-27B' })
     requests.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null })
+    if (url === '/api/cctv/nearby' && nearbyFailure) return nearbyFailure()
     if (url === '/api/cctv/nearby') return Response.json({ cctvs: [{
       id: 'ITS:test', provider: 'ITS', name: '테스트 도로', providerId: 'test',
       latitude: 37.124, longitude: 127.124, distanceMeters: 78,
@@ -99,6 +103,24 @@ test('location denial keeps chat usable and never calls nearby API', async () =>
     assert.match(view.host.textContent, /위치 권한이 필요합니다/)
     assert.equal(view.host.querySelector('textarea')?.disabled, false)
     assert.equal(view.host.querySelector('.cctv-results'), null)
+  } finally { await view.dispose() }
+})
+
+test('an ITS configuration failure explains the cause and keeps diagnostics out of chat history', async () => {
+  const view = await setup(
+    (success) => success({ coords: coordinates } as GeolocationPosition),
+    () => Response.json({ error: {
+      code: 'configuration_error',
+      message: 'ITS_API_KEY=private-value GPS=37.123456,127.123456',
+    } }, { status: 503 }),
+  )
+  try {
+    assert.match(view.host.textContent, /CCTV 서비스 인증 설정이 누락되어 있습니다/)
+    assert.equal(view.host.querySelector('textarea')?.disabled, false)
+    assert.equal(view.host.querySelector('.cctv-results'), null)
+    const history = dom.localStorage.getItem('mira-conversations') || ''
+    assert.match(history, /CCTV 서비스 인증 설정이 누락/)
+    assert.doesNotMatch(history, /private-value|37\.123456|127\.123456|ITS_API_KEY|GPS/)
   } finally { await view.dispose() }
 })
 

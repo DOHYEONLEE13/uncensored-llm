@@ -99,3 +99,15 @@ DOM 테스트는 지도 callback, 선택 패널, HLS destroy, native HLS, HTTP �
 Git 연동 배포 시 빌드 환경에 `VITE_CCTV_MAP_PROVIDER=kakao`와 `VITE_KAKAO_MAP_JAVASCRIPT_KEY`를 설정하고 재빌드해야 한다. 서버의 ITS 키는 기존 `ITS_API_KEY`로 따로 설정한다. `.env.local`은 push에 포함되지 않는다.
 
 공식 참고: [Kakao Maps 가이드](https://apis.map.kakao.com/web/guide/), [SDK 레퍼런스](https://apis.map.kakao.com/web/documentation/), [Kakao Maps 사용 설정](https://developers.kakao.com/docs/ko/kakaomap/common).
+
+## Cloudflare CCTV 조회 실패 수정 (2026-09-05)
+
+배포 API를 직접 확인한 결과, 스크린샷의 고정 배포 주소는 `configuration_error`를 반환했고 대표 주소는 `its_connection_error`를 반환했다. 고정 배포 주소는 그 배포 시점의 Secret 설정을 사용하므로 설정 변경 후에는 새 배포 또는 대표 주소에서 확인해야 한다.
+
+연결 오류의 코드 원인은 `ItsCctvProvider`가 네이티브 `fetch`를 인스턴스 필드에 저장하고 `this.fetchImplementation(...)`으로 호출한 것이다. Cloudflare Workers에서는 이때 `this`가 전역 객체 대신 provider가 되어 `TypeError: Illegal invocation`이 발생했다. Node의 fetch와 화살표 함수 mock에서는 재현되지 않아 기존 테스트가 놓쳤다. 네이티브 fetch를 사용하는 Miniflare/workerd에서 동일 오류를 재현했다.
+
+Node/Pages provider 모두 fetch를 `globalThis`에 바인딩하도록 수정했다. 수정 후 같은 Workers 런타임에서 실제 ITS 조회가 HTTP 200으로 성공하고 다음 요청이 캐시를 재사용하는 것을 확인했다. 호환성 날짜/9443 포트도 조사했으나, 확인된 호출 오류는 네트워크 요청 전에 발생했으므로 Cloudflare 설정 파일을 새로 도입하지 않았다. 기존 대시보드의 Secret·지도 빌드 환경변수 설정을 계속 사용한다.
+
+클라이언트는 서버가 반환하는 오류 코드만 허용 목록으로 해석하여 인증 설정 누락, 제공 서버 연결 실패, 시간 초과, 데이터 오류를 구분한다. 원본 오류 메시지·임의 오류 코드는 채팅에 복사하지 않는다. `error: null` 응답도 브라우저 네트워크 오류로 잘못 처리하지 않는다. 연결 시간 초과는 Node/Pages에서 `its_timeout` / HTTP 504로 구분한다.
+
+회귀 검증은 전역 receiver를 요구하는 네이티브 fetch 계약, 시간 초과/연결 실패 구분, 실제 배포 오류 응답의 사용자 메시지, 잘못된 오류 payload, 채팅/저장 이력의 진단 정보 비노출을 포함한다. 실제 사용자 위치 및 카카오 허용 도메인 설정은 별개이며, 지도 SDK는 CCTV API가 성공한 다음 로드된다.
