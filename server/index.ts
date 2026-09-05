@@ -3,6 +3,7 @@ import { createServer, type ServerResponse } from 'node:http'
 import { extname, resolve, sep } from 'node:path'
 import { config } from 'dotenv'
 import { handleNearbyCctvRequest } from './cctv.js'
+import { createDomainHandler, readDomainKeys } from './domainHttp.js'
 import { getOrcaRouterStatus, handleOrcaRouterChat } from './orcarouter.js'
 
 const rootDirectory = process.cwd()
@@ -10,6 +11,7 @@ const isDevelopment = process.argv.includes('--dev')
 const distDirectory = resolve(rootDirectory, 'dist')
 
 config({ path: resolve(rootDirectory, '.env.local'), quiet: true })
+const domainHandler = createDomainHandler({ keys: readDomainKeys(process.env) })
 
 const mimeTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -93,6 +95,34 @@ const server = createServer(async (request, response) => {
 
   if (requestUrl.pathname === '/api/chat') {
     await handleOrcaRouterChat(request, response)
+    return
+  }
+
+  if (requestUrl.pathname === '/api/domain/analyze') {
+    const controller = new AbortController()
+    response.on('close', () => { if (!response.writableEnded) controller.abort() })
+    const chunks: Buffer[] = []
+    let length = 0
+    try {
+      for await (const chunk of request) {
+        length += chunk.length
+        if (length > 4096) {
+          response.writeHead(413, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+          response.end(JSON.stringify({ error: '요청 크기가 너무 큽니다.' }))
+          return
+        }
+        chunks.push(Buffer.from(chunk))
+      }
+      const headers = new Headers()
+      for (const [key, value] of Object.entries(request.headers)) if (value) headers.set(key, Array.isArray(value) ? value.join(', ') : value)
+      const url = new URL('/api/domain/analyze', `http://${request.headers.host ?? 'localhost'}`)
+      const result = await domainHandler(new Request(url, { method: request.method, headers, signal: controller.signal,
+        ...(!['GET', 'HEAD'].includes(request.method ?? 'GET') ? { body: Buffer.concat(chunks) } : {}),
+      }), request.socket.remoteAddress ?? 'anonymous')
+      if (!response.destroyed) { response.writeHead(result.status, Object.fromEntries(result.headers)); response.end(await result.text()) }
+    } catch {
+      if (!response.destroyed) { response.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify({ error: '도메인 요청을 처리하지 못했습니다.' })) }
+    }
     return
   }
 
