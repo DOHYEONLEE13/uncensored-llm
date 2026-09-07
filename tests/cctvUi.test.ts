@@ -171,7 +171,7 @@ test('missing provider and empty results have distinct safe states', async () =>
   const view = await mount(createElement(CctvResults, { cctvs: [], coordinates }))
   try {
     assert.match(view.host.textContent, /지도 서비스가 아직 연결되지 않았습니다/)
-    assert.match(view.host.textContent, /반경 2km 안에서 제공 중인 ITS 도로 CCTV를 찾지 못했습니다/)
+    assert.match(view.host.textContent, /반경 2km 안에서 제공 중인 도로 CCTV를 찾지 못했습니다/)
     assert.equal(view.host.querySelector('script'), null)
   } finally { await view.dispose() }
 })
@@ -190,4 +190,30 @@ test('native HLS remains available and HTTPS blocks HTTP video and images gracef
       assert.equal(blocked.host.querySelector('[src]'), null)
     } finally { await blocked.dispose() }
   }
+})
+
+test('UTIC selection keeps the glass video dialog and displays the official attribution', async (t) => {
+  t.mock.method(dom.HTMLVideoElement.prototype, 'canPlayType', () => 'probably')
+  const utic = { ...camera, id: 'UTIC:city', provider: 'UTIC' as const, roadType: 'urban' }
+  const view = await mount(createElement(CctvResults, { cctvs: [utic], search: { query: utic.name, total: 1 } }))
+  try {
+    assert.match(view.host.textContent, /경찰청 도시교통정보센터\(UTIC\)/)
+    await click(view.host.querySelector('.cctv-list-button'))
+    await click(view.host.querySelector('.cctv-action'))
+    const dialog = dom.document.querySelector('dialog')!
+    assert.match(dialog.textContent, /UTIC CCTV/)
+    assert.equal(dialog.querySelector('video')?.getAttribute('src'), utic.streamUrl)
+    await click(dialog.querySelector('button'))
+    assert.equal(dom.document.querySelector('dialog'), null)
+  } finally { await view.dispose() }
+})
+
+test('unsupported authenticated UTIC players show an explanation without requesting media', async () => {
+  const view = await mount(createElement(CctvVideo, { cctv: { ...camera, provider: 'UTIC', format: 'unavailable', streamUrl: '' } }))
+  try {
+    assert.match(view.host.textContent, /별도 인증이 필요해 앱에서 재생할 수 없습니다/)
+    assert.equal(view.host.querySelector('video,iframe,img'), null)
+  } finally { await view.dispose() }
+  const unsafe = await mount(createElement(CctvVideo, { cctv: { ...camera, provider: 'UTIC', format: 'iframe', streamUrl: 'https://evil.example.test/player' } }))
+  try { assert.equal(unsafe.host.querySelector('iframe'), null) } finally { await unsafe.dispose() }
 })

@@ -3,6 +3,7 @@ import { createServer, type ServerResponse } from 'node:http'
 import { extname, resolve, sep } from 'node:path'
 import { config } from 'dotenv'
 import { handleNearbyCctvRequest } from './cctv.js'
+import { handleUticCatalog } from './uticRelay.js'
 import { createDomainHandler, readDomainKeys } from './domainHttp.js'
 import { getOrcaRouterStatus, handleOrcaRouterChat } from './orcarouter.js'
 
@@ -137,6 +138,11 @@ const server = createServer(async (request, response) => {
       'Cache-Control': 'no-store',
     })
     response.end(JSON.stringify(getOrcaRouterStatus()))
+    return
+  }
+
+  if (requestUrl.pathname === '/api/cctv/utic-catalog') {
+    await handleUticCatalog(request, response)
     return
   }
 

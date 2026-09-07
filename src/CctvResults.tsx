@@ -1,6 +1,6 @@
 import { Component, lazy, Suspense, useId, useMemo, useState, type ReactNode } from 'react'
 import { MapPin, Radio, Video, X } from 'lucide-react'
-import { formatCctvDistance, formatCctvRoadType, selectNearbyCctvs, type Coordinates, type NearbyCctv, type CctvCamera } from './cctv'
+import { cctvIssueMessage, formatCctvDistance, formatCctvRoadType, selectNearbyCctvs, type CctvIssue, type Coordinates, type NearbyCctv, type CctvCamera } from './cctv'
 import CctvVideoDialog from './CctvVideoDialog'
 import type { MapProviderLoader } from './mapProvider'
 
@@ -19,6 +19,7 @@ class MapBoundary extends Component<{ children: ReactNode }, { failed: boolean }
 
 type CctvResultsProps = {
   cctvs: CctvCamera[]
+  issues?: CctvIssue[]
   search?: { query: string; total: number }
   coordinates?: Coordinates
   loadMapProvider?: MapProviderLoader
@@ -44,7 +45,7 @@ function SelectedCctv({ cctv, onClose }: { cctv: CctvCamera; onClose(): void }) 
   )
 }
 
-export function CctvResults({ cctvs, coordinates, search, loadMapProvider }: CctvResultsProps) {
+export function CctvResults({ cctvs, issues = [], coordinates, search, loadMapProvider }: CctvResultsProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const nearby = useMemo(() => selectNearbyCctvs(cctvs.filter((camera): camera is NearbyCctv => camera.distanceMeters !== undefined), coordinates), [cctvs, coordinates])
   const cameras = search ? cctvs : nearby
@@ -56,8 +57,9 @@ export function CctvResults({ cctvs, coordinates, search, loadMapProvider }: Cct
       <div className="cctv-results-heading">
         <Radio className="size-4 shrink-0" aria-hidden="true" />
         <span>{search ? `“${search.query}” · CCTV ${search.total}곳` : `반경 2km · CCTV ${nearby.length}곳`}</span>
-        <span className="cctv-provider">ITS</span>
+        <span className="cctv-provider">{[...new Set(cameras.map((camera) => camera.provider))].join(' · ') || 'CCTV'}</span>
       </div>
+      {issues.map((issue) => <p key={issue.provider} className="cctv-list-caption" role="status">{cctvIssueMessage(issue)}</p>)}
       {!search && <MapBoundary>
         <Suspense fallback={<div className="cctv-map-frame cctv-map-status" role="status">지도를 불러오는 중…</div>}>
           <CctvMap coordinates={coordinates} cctvs={nearby} selectedId={selected?.id ?? null} onSelect={setSelectedId} loadProvider={loadMapProvider} />
@@ -67,7 +69,7 @@ export function CctvResults({ cctvs, coordinates, search, loadMapProvider }: Cct
         {selected && <SelectedCctv key={selected.id} cctv={selected} onClose={() => setSelectedId(null)} />}
       </div>
       {cameras.length === 0 ? (
-        <p className="cctv-empty" role="status">{search ? '일치하는 도로명이나 CCTV 이름이 없습니다. ITS에서 제공하는 이름으로 다시 검색해 주세요.' : '현재 위치 반경 2km 안에서 제공 중인 ITS 도로 CCTV를 찾지 못했습니다.'}</p>
+        <p className="cctv-empty" role="status">{search ? '일치하는 도로명이나 CCTV 이름이 없습니다. 제공기관의 CCTV 이름으로 다시 검색해 주세요.' : '현재 위치 반경 2km 안에서 제공 중인 도로 CCTV를 찾지 못했습니다.'}</p>
       ) : (
         <>
           <p className="cctv-list-caption">{search ? `도로명·CCTV 이름 일치 결과${search.total > cameras.length ? ` · ${cameras.length}곳 표시, 더 구체적인 이름으로 좁힐 수 있습니다` : ''}` : '가까운 순 · 조회 당시 위치 기준 직선거리'}</p>
@@ -76,7 +78,7 @@ export function CctvResults({ cctvs, coordinates, search, loadMapProvider }: Cct
               <li key={cctv.id}>
                 <button type="button" className="cctv-list-button" aria-label={`${cctv.name}${cctv.distanceMeters !== undefined ? `, 직선 ${formatCctvDistance(cctv.distanceMeters)}` : ''}, 선택`} aria-pressed={selected?.id === cctv.id} aria-controls={panelId} onClick={() => setSelectedId(cctv.id)}>
                   <MapPin className="size-4 shrink-0" aria-hidden="true" />
-                  <span className="cctv-list-name">{cctv.name}<span>{formatCctvRoadType(cctv.roadType)}</span></span>
+                  <span className="cctv-list-name">{cctv.name}<span>{cctv.provider} · {formatCctvRoadType(cctv.roadType)}</span></span>
                   {cctv.distanceMeters !== undefined && <span className="cctv-list-distance">{formatCctvDistance(cctv.distanceMeters)}</span>}
                 </button>
               </li>
@@ -84,6 +86,7 @@ export function CctvResults({ cctvs, coordinates, search, loadMapProvider }: Cct
           </ul>
         </>
       )}
+      {cameras.some((camera) => camera.provider === 'UTIC') && <p className="cctv-list-caption">제공: 경찰청 도시교통정보센터(UTIC) · 지자체 상황에 따라 영상이 제공되지 않을 수 있습니다.</p>}
     </section>
   )
 }

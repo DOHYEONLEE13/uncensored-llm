@@ -1,72 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { parseCctvSearchInput, searchCctvs, type CctvSearchInput } from './cctvSearch.js'
 
-export type CctvProviderId = 'ITS' | 'UTIC'
-export type ItsRoadType = 'ex' | 'its'
-export type CctvFormat = 'hls' | 'mp4' | 'image' | 'unknown'
-
-export type Cctv = {
-  id: string
-  provider: CctvProviderId
-  providerId: string
-  name: string
-  latitude: number
-  longitude: number
-  streamUrl: string
-  format: CctvFormat
-  roadSectionId?: string
-  roadName?: string
-  roadType?: ItsRoadType
-  direction?: string
-  updatedAt?: string
-}
-
-export type NearbyCctv = Cctv & {
-  distanceMeters: number
-}
-
-export type NearbyCctvInput = {
-  latitude: number
-  longitude: number
-  radiusKm: number
-  limit: number
-}
-
-export type CctvSnapshot = {
-  cctvs: Cctv[]
-  updatedAt: number
-  partial?: boolean
-  retryAfter?: number
-}
-
-export type CctvBatch = Cctv[] & { partial?: boolean }
-
-export type CctvCacheState = 'fresh' | 'stale'
-
-export type NearbyCctvResult = {
-  cctvs: NearbyCctv[]
-  cache: {
-    state: CctvCacheState
-    updatedAt: number
-  }
-}
-
-export interface CctvProvider {
-  readonly id: CctvProviderId
-  fetchCctvs(): Promise<CctvBatch>
-}
-
-export class CctvServiceError extends Error {
-  readonly type: string
-  readonly status: number
-
-  constructor(message: string, type: string, status: number) {
-    super(message)
-    this.name = 'CctvServiceError'
-    this.type = type
-    this.status = status
-  }
-}
+import { CctvServiceError, normalizeCctvIssues, type Cctv, type CctvBatch, type CctvProvider, type CctvSnapshot, type CctvCacheState, type CctvFormat, type ItsRoadType, type NearbyCctvInput, type NearbyCctvResult } from './cctvTypes.js'
+export * from './cctvTypes.js'
+import { UticCctvProvider } from './utic.js'
+import { CombinedCctvProvider } from './cctvProviders.js'
 
 export const CCTV_CACHE_FRESH_MILLISECONDS = 20 * 60 * 60 * 1_000
 export const CCTV_CACHE_STALE_MILLISECONDS = 23 * 60 * 60 * 1_000
@@ -690,6 +628,7 @@ export function createProcessCctvService({
             ...snapshot,
             cctvs: preservedCctvs,
             retryAfter: completedAt + retryMilliseconds,
+            issues: normalizeCctvIssues(cctvs.issues),
           }
           lastRefreshFailureAt = undefined
           lastRefreshError = undefined
@@ -697,7 +636,8 @@ export function createProcessCctvService({
         }
         const nextSnapshot: CctvSnapshot = {
           cctvs: [...cctvs],
-          updatedAt: completedAt,
+          updatedAt: Math.min(cctvs.updatedAt ?? completedAt, completedAt),
+          issues: normalizeCctvIssues(cctvs.issues),
           ...(partial
             ? { partial: true, retryAfter: completedAt + retryMilliseconds }
             : {}),
@@ -786,11 +726,22 @@ export function createProcessCctvService({
   }
 
   return {
+    async getCatalog({ fresh = false } = {}) {
+      const cached = (await getSnapshot()).snapshot
+      if (fresh && now() - cached.updatedAt >= freshMilliseconds) {
+        if (lastRefreshFailureAt !== undefined && now() - lastRefreshFailureAt < retryMilliseconds) {
+          throw lastRefreshError ?? new CctvServiceError('CCTV 정보를 갱신할 수 없습니다.', 'cctv_cache_unavailable', 503)
+        }
+        return refresh()
+      }
+      return cached
+    },
     async search(input: CctvSearchInput) {
       const cached = await getSnapshot()
       return {
         ...searchCctvs(cached.snapshot.cctvs, input),
         cache: { state: cached.state, updatedAt: cached.snapshot.updatedAt },
+        issues: cached.snapshot.issues ?? [],
       }
     },
     async getNearby(input: NearbyCctvInput): Promise<NearbyCctvResult> {
@@ -798,6 +749,7 @@ export function createProcessCctvService({
       return {
         cctvs: findNearbyCctvs(cached.snapshot.cctvs, input),
         cache: { state: cached.state, updatedAt: cached.snapshot.updatedAt },
+        issues: cached.snapshot.issues ?? [],
       }
     },
   }
@@ -813,14 +765,19 @@ function getItsApiKey() {
 function getDefaultService() {
   if (!defaultService) {
     const apiKey = getItsApiKey()
-    if (!apiKey) {
+    const uticKey = process.env.UTIC_API_KEY?.trim()
+    const relayUrl = process.env.UTIC_RELAY_URL?.trim()
+    const providers: CctvProvider[] = []
+    if (apiKey) providers.push(new ItsCctvProvider(apiKey))
+    if (uticKey || relayUrl) providers.push(new UticCctvProvider({ apiKey: uticKey, relayUrl, relayToken: process.env.UTIC_RELAY_TOKEN?.trim() }))
+    if (!providers.length) {
       throw new CctvServiceError(
-        'ITS_API_KEY가 .env.local에 설정되지 않았습니다.',
+        'ITS 또는 UTIC CCTV 인증 설정이 필요합니다.',
         'configuration_error',
         503,
       )
     }
-    defaultService = createProcessCctvService({ provider: new ItsCctvProvider(apiKey) })
+    defaultService = createProcessCctvService({ provider: new CombinedCctvProvider(providers) })
   }
   return defaultService
 }

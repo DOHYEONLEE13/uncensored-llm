@@ -1,3 +1,5 @@
+import { isUticPlayerUrl } from '../server/uticPlayback'
+
 /**
  * Client-side contract for the nearby CCTV endpoint.
  *
@@ -22,6 +24,7 @@ export function formatCctvDistance(distanceMeters: number): string {
 export function formatCctvRoadType(roadType?: string): string {
   if (roadType === 'ex') return '고속도로'
   if (roadType === 'its') return '국도'
+  if (roadType === 'urban') return '도시 도로'
   return roadType || '도로 유형 미제공'
 }
 
@@ -41,7 +44,7 @@ export function selectNearbyCctvs(
   limit = CCTV_LIMIT,
 ): NearbyCctv[] {
   return cctvs.filter((cctv) =>
-    cctv.provider === 'ITS' && hasValidCoordinates(cctv) &&
+    (cctv.provider === 'ITS' || cctv.provider === 'UTIC') && hasValidCoordinates(cctv) &&
     Number.isFinite(cctv.distanceMeters) && cctv.distanceMeters >= 0 &&
     cctv.distanceMeters <= radiusMeters &&
     (!coordinates || cctvDistanceMeters(coordinates, cctv) <= radiusMeters)
@@ -49,7 +52,18 @@ export function selectNearbyCctvs(
     .slice(0, limit)
 }
 
-export type CctvFormat = 'hls' | 'mp4' | 'image' | 'unknown'
+export type CctvFormat = 'hls' | 'mp4' | 'image' | 'iframe' | 'unavailable' | 'unknown'
+export type CctvIssue = { provider: 'ITS' | 'UTIC'; code: string }
+export function cctvIssueMessage(issue: CctvIssue): string {
+  return issue.code === 'utic_ip_not_allowed' && issue.provider === 'UTIC'
+    ? 'UTIC는 서버 IP가 승인 대역과 달라 연결되지 않았습니다. 현재 이용 가능한 CCTV만 표시합니다.'
+    : `${issue.provider}에 연결하지 못해 일부 CCTV가 빠져 있을 수 있습니다.`
+}
+function parseIssues(value: unknown): CctvIssue[] {
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 2).flatMap((item) => item && (item.provider === 'ITS' || item.provider === 'UTIC')
+    ? [{ provider: item.provider, code: item.code === 'utic_ip_not_allowed' ? item.code : 'cctv_service_error' }] : [])
+}
 
 export type NearbyCctv = {
   id: string
@@ -68,7 +82,7 @@ export type NearbyCctv = {
 }
 
 export type CctvCamera = Omit<NearbyCctv, 'distanceMeters'> & { distanceMeters?: number }
-export type CctvSearchResponse = { cctvs: CctvCamera[]; query: string; total: number }
+export type CctvSearchResponse = { cctvs: CctvCamera[]; query: string; total: number; issues?: CctvIssue[] }
 
 export type CctvCacheMetadata = {
   status: 'fresh' | 'cached' | 'stale'
@@ -78,6 +92,7 @@ export type CctvCacheMetadata = {
 export type NearbyCctvResponse = {
   cctvs: NearbyCctv[]
   cache?: CctvCacheMetadata
+  issues?: CctvIssue[]
 }
 
 export type CctvClientErrorCode =
@@ -100,6 +115,13 @@ export type CctvClientErrorCode =
   | 'its_empty_response'
   | 'cctv_cache_unavailable'
   | 'cctv_service_error'
+  | 'utic_ip_not_allowed'
+  | 'utic_api_error'
+  | 'utic_invalid_response'
+  | 'utic_empty_response'
+  | 'utic_connection_error'
+  | 'utic_timeout'
+  | 'utic_relay_error'
 
 const ERROR_MESSAGES: Record<CctvClientErrorCode, string> = {
   location_denied: '주변 CCTV를 찾으려면 위치 권한이 필요합니다.',
@@ -121,6 +143,13 @@ const ERROR_MESSAGES: Record<CctvClientErrorCode, string> = {
   its_empty_response: 'CCTV 제공 서버에서 정보를 받지 못했습니다. 잠시 후 다시 시도해 주세요.',
   cctv_cache_unavailable: 'CCTV 정보를 준비하지 못했습니다. 잠시 후 다시 시도해 주세요.',
   cctv_service_error: '현재 CCTV 서비스를 이용할 수 없습니다.',
+  utic_ip_not_allowed: 'UTIC에 등록된 IP 대역과 서버 IP가 다릅니다. 관리자에게 문의해 주세요.',
+  utic_api_error: 'UTIC 인증 또는 요청 처리에 문제가 있습니다. 관리자에게 문의해 주세요.',
+  utic_invalid_response: 'UTIC CCTV 정보를 읽을 수 없습니다. 잠시 후 다시 시도해 주세요.',
+  utic_empty_response: 'UTIC에서 CCTV 정보를 받지 못했습니다. 잠시 후 다시 시도해 주세요.',
+  utic_connection_error: 'UTIC 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.',
+  utic_timeout: 'UTIC CCTV 조회 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.',
+  utic_relay_error: 'UTIC 연결 서버 설정을 확인해 주세요. 관리자에게 문의해 주세요.',
 }
 
 export class CctvClientError extends Error {
@@ -237,9 +266,10 @@ function parseCctv(value: unknown, allowMissingDistance = false): CctvCamera | u
       ? record.distanceKm * 1_000
       : undefined
   const format = record.format
+  const unavailable = provider === 'UTIC' && format === 'unavailable' && streamUrl === ''
 
   if (
-    !id || !provider || !name || !streamUrl || latitude === undefined || longitude === undefined ||
+    !id || !provider || !name || (!streamUrl && !unavailable) || latitude === undefined || longitude === undefined ||
     (!allowMissingDistance && distanceMeters === undefined) || !hasValidCoordinates({ latitude, longitude }) ||
     (distanceMeters !== undefined && (!Number.isFinite(distanceMeters) || distanceMeters < 0))
   ) {
@@ -247,9 +277,13 @@ function parseCctv(value: unknown, allowMissingDistance = false): CctvCamera | u
   }
 
   try {
-    const parsedStreamUrl = new URL(streamUrl)
-    if (parsedStreamUrl.protocol !== 'http:' && parsedStreamUrl.protocol !== 'https:') return undefined
-    if (parsedStreamUrl.username || parsedStreamUrl.password) return undefined
+    if (!unavailable) {
+      const parsedStreamUrl = new URL(streamUrl)
+      if (parsedStreamUrl.protocol !== 'http:' && parsedStreamUrl.protocol !== 'https:') return undefined
+      if (parsedStreamUrl.username || parsedStreamUrl.password) return undefined
+    }
+    if (format === 'iframe' && (provider !== 'UTIC' || !isUticPlayerUrl(streamUrl))) return undefined
+    if (format === 'unavailable' && !unavailable) return undefined
   } catch {
     return undefined
   }
@@ -263,7 +297,7 @@ function parseCctv(value: unknown, allowMissingDistance = false): CctvCamera | u
     longitude,
     ...(distanceMeters === undefined ? {} : { distanceMeters }),
     streamUrl,
-    format: format === 'hls' || format === 'mp4' || format === 'image' ? format : 'unknown',
+    format: format === 'hls' || format === 'mp4' || format === 'image' || format === 'iframe' || format === 'unavailable' ? format : 'unknown',
     ...(typeof record.roadType === 'string' ? { roadType: record.roadType } : {}),
     ...(typeof record.roadName === 'string' ? { roadName: record.roadName } : {}),
     ...(typeof record.roadSectionId === 'string' ? { roadSectionId: record.roadSectionId } : {}),
@@ -298,6 +332,7 @@ function normalizeResponse(value: unknown): NearbyCctvResponse {
 
   return {
     cctvs,
+    issues: parseIssues(record.issues),
     ...(status === 'fresh' || status === 'cached' || status === 'stale'
       ? {
           cache: {
@@ -339,7 +374,7 @@ export async function fetchCctvsByName(query: string, signal?: AbortSignal): Pro
   }
   const cctvs = body.cctvs.map((value) => parseCctv(value, true)).filter((camera): camera is CctvCamera => Boolean(camera))
   if (cctvs.length !== body.cctvs.length) throw new CctvClientError('invalid_response')
-  return { cctvs, query: body.query, total: body.total }
+  return { cctvs, query: body.query, total: body.total, issues: parseIssues(body.issues) }
 }
 
 async function requestCctvPayload(path: string, body: object, signal?: AbortSignal): Promise<unknown> {

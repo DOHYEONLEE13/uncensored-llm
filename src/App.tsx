@@ -47,6 +47,7 @@ import {
   isExplicitCctvIntent,
   type Coordinates,
   type CctvCamera,
+  type CctvIssue,
 } from './cctv'
 
 type TokenUsage = {
@@ -68,6 +69,7 @@ type ChatMessage = {
   webSearchSources?: WebSearchSource[]
   webSearchWarning?: string
   cctvs?: CctvCamera[]
+  cctvIssues?: CctvIssue[]
   cctvSearch?: { query: string; total: number }
 }
 
@@ -161,6 +163,7 @@ function getPersistableConversations(conversations: Conversation[]): Conversatio
     ...conversation,
     messages: conversation.messages.map((message) => {
       const persistedMessage = { ...message }
+      delete persistedMessage.cctvIssues
       delete persistedMessage.cctvs
       delete persistedMessage.cctvSearch
       return persistedMessage
@@ -690,6 +693,7 @@ function MessageList({
                 {message.cctvs && (
                   <CctvResults
                     cctvs={message.cctvs}
+                    issues={message.cctvIssues}
                     search={message.cctvSearch}
                     coordinates={cctvLocation?.messageId === message.id ? cctvLocation.coordinates : undefined}
                   />
@@ -1068,10 +1072,11 @@ export default function App() {
         setMessages((current) => [...current, {
           id: assistantId, role: 'assistant',
           content: result.total
-            ? `“${result.query}”에 일치하는 ITS CCTV ${result.total}곳${result.total > result.cctvs.length ? ` 중 ${result.cctvs.length}곳` : ''}입니다.`
-            : `“${result.query}”에 일치하는 ITS CCTV를 찾지 못했습니다. 도로명이나 CCTV 이름을 확인해 주세요.`,
+            ? `“${result.query}”에 일치하는 CCTV ${result.total}곳${result.total > result.cctvs.length ? ` 중 ${result.cctvs.length}곳` : ''}입니다.`
+            : `“${result.query}”에 일치하는 CCTV를 찾지 못했습니다. 도로명이나 CCTV 이름을 확인해 주세요.`,
           tokenEstimate: 32,
           cctvs: result.cctvs,
+          cctvIssues: result.issues,
           cctvSearch: { query: result.query, total: result.total },
         }])
         return
@@ -1096,10 +1101,11 @@ export default function App() {
           role: 'assistant',
           content:
             count > 0
-              ? `현재 위치 반경 2km 안의 ITS 도로 CCTV ${count}곳을 거리순으로 찾았습니다.`
-              : '현재 위치 반경 2km 안의 ITS 도로 CCTV 조회 결과입니다.',
+              ? `현재 위치 반경 2km 안의 도로 CCTV ${count}곳을 거리순으로 찾았습니다.`
+              : '현재 위치 반경 2km 안의 도로 CCTV 조회 결과입니다.',
           tokenEstimate: 24,
           cctvs: result.cctvs,
+          cctvIssues: result.issues,
         },
       ])
     } catch (error) {
@@ -1713,8 +1719,8 @@ export default function App() {
                                 onMouseDown={(event) => event.preventDefault()}
                                 onClick={() => void submitCctvMessage('내 주변 CCTV 보여줘')}
                                 disabled={isThinking}
-                                aria-label="현재 위치에서 가까운 ITS 도로 CCTV 찾기"
-                                title="현재 위치를 한 번 확인해 가까운 ITS CCTV를 찾습니다"
+                                aria-label="현재 위치에서 가까운 도로 CCTV 찾기"
+                                title="현재 위치를 한 번 확인해 가까운 CCTV를 찾습니다"
                                 className="flex h-10 w-full items-center gap-2 rounded-[14px] border border-white/10 bg-white/[0.045] p-1 pr-3 text-left text-white/58 transition hover:border-white/18 hover:bg-white/[0.07] hover:text-white/82 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#c8f2e0]/40 disabled:cursor-not-allowed disabled:opacity-35"
                               >
                                 <span className="relative grid size-7 shrink-0 place-items-center rounded-full border border-current/15 bg-white/[0.035]">
@@ -1723,7 +1729,7 @@ export default function App() {
                                 <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-[-0.02em]">
                                   주변 CCTV
                                 </span>
-                                <span className="text-[10px] font-semibold text-current/55">ITS</span>
+                                <span className="text-[10px] font-semibold text-current/55">ITS · UTIC</span>
                               </button>
                             </motion.div>
                           )}

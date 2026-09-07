@@ -34,14 +34,14 @@ export default function CctvVideoDialog({ cctv, onClose }: { cctv: CctvCamera; o
       }}>
       <div className="cctv-dialog-heading">
         <div className="cctv-dialog-title">
-          <span className="cctv-dialog-label"><Radio size={14} aria-hidden="true" /> ITS CCTV</span>
+          <span className="cctv-dialog-label"><Radio size={14} aria-hidden="true" /> {cctv.provider} CCTV</span>
           <h2 id={titleId}>{cctv.name}</h2>
           <p>{cctv.distanceMeters !== undefined && `직선 ${formatCctvDistance(cctv.distanceMeters)} · `}{formatCctvRoadType(cctv.roadType)}</p>
         </div>
         <button ref={closeRef} type="button" className="cctv-close" aria-label="CCTV 영상 팝업 닫기" onClick={onClose}><X size={18} aria-hidden="true" /></button>
       </div>
       <CctvVideo cctv={cctv} autoPlay />
-      <p className="cctv-dialog-caption">음소거로 재생됩니다. 영상의 재생·음량 버튼으로 조절할 수 있습니다.</p>
+      <p className="cctv-dialog-caption">{cctv.provider === 'UTIC' && '제공: 경찰청 도시교통정보센터(UTIC). '}{cctv.format === 'iframe' ? '제공기관의 재생 시간·브라우저 제한이 적용됩니다.' : cctv.format === 'unavailable' ? '다른 CCTV를 선택해 주세요.' : '음소거로 재생됩니다. 영상의 재생·음량 버튼으로 조절할 수 있습니다.'}</p>
     </dialog>, document.body,
   )
 }

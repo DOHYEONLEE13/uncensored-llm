@@ -515,7 +515,7 @@ describe('Cloudflare cache', () => {
     assert.deepEqual(await response.json(), {
       error: {
         code: 'configuration_error',
-        message: 'ITS_API_KEY가 Cloudflare Pages Secret에 설정되지 않았습니다.',
+        message: 'ITS 또는 UTIC CCTV 인증 설정이 필요합니다.',
       },
     })
   })

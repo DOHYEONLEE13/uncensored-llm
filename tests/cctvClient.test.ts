@@ -89,7 +89,7 @@ test('posts coordinates in the request body and normalizes a nearby CCTV respons
   }
 })
 
-test('keeps server distances, sorts ITS results and excludes the exact outside boundary', () => {
+test('keeps server distances, sorts ITS and UTIC results and excludes the exact outside boundary', () => {
   const camera: NearbyCctv = {
     id: 'ITS:near', provider: 'ITS', providerId: 'near', name: '테스트 CCTV',
     latitude: 37.001, longitude: 127, distanceMeters: 110,
@@ -103,7 +103,7 @@ test('keeps server distances, sorts ITS results and excludes the exact outside b
     { ...camera, id: 'utic', provider: 'UTIC' },
     camera,
   ], { latitude: 37, longitude: 127 })
-  assert.deepEqual(results.map(({ id, distanceMeters }) => [id, distanceMeters]), [['ITS:near', 110], ['far', 1_120]])
+  assert.deepEqual(results.map(({ id, distanceMeters }) => [id, distanceMeters]), [['ITS:near', 110], ['utic', 110], ['far', 1_120]])
   assert.equal(selectNearbyCctvs(Array.from({ length: 25 }, (_, i) => ({ ...camera, id: `ITS:${i}` }))).length, 20)
   assert.equal(formatCctvDistance(320), '320m')
   assert.equal(formatCctvDistance(1_400), '1.4km')
@@ -218,4 +218,17 @@ test('turns denied browser geolocation into a recoverable UI error', async () =>
     if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator)
     else delete (globalThis as { navigator?: Navigator }).navigator
   }
+})
+
+test('UTIC metadata without playable media remains searchable, but arbitrary iframes are rejected', async () => {
+  const original = globalThis.fetch
+  let streamUrl = ''
+  let format = 'unavailable'
+  globalThis.fetch = async () => Response.json({ query: '도시 도로', total: 1, cctvs: [{ id: 'UTIC:A', provider: 'UTIC', name: '도시 도로', latitude: 37, longitude: 127, streamUrl, format }] })
+  try {
+    assert.equal((await fetchCctvsByName('도시 도로')).cctvs[0].format, 'unavailable')
+    streamUrl = 'https://evil.example.test/player'
+    format = 'iframe'
+    await assert.rejects(fetchCctvsByName('도시 도로'), (error: unknown) => error instanceof CctvClientError && error.code === 'invalid_response')
+  } finally { globalThis.fetch = original }
 })

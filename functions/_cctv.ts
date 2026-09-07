@@ -1,65 +1,13 @@
 import { parseCctvSearchInput, searchCctvs, type CctvSearchInput } from '../server/cctvSearch'
 
-export type CctvProviderId = 'ITS' | 'UTIC'
-export type ItsRoadType = 'ex' | 'its'
-export type CctvFormat = 'hls' | 'mp4' | 'image' | 'unknown'
-
-export type Cctv = {
-  id: string
-  provider: CctvProviderId
-  providerId: string
-  name: string
-  latitude: number
-  longitude: number
-  streamUrl: string
-  format: CctvFormat
-  roadSectionId?: string
-  roadName?: string
-  roadType?: ItsRoadType
-  direction?: string
-  updatedAt?: string
-}
-
-export type NearbyCctv = Cctv & { distanceMeters: number }
-export type NearbyCctvInput = {
-  latitude: number
-  longitude: number
-  radiusKm: number
-  limit: number
-}
-export type CctvSnapshot = {
-  cctvs: Cctv[]
-  updatedAt: number
-  partial?: boolean
-  retryAfter?: number
-}
-export type CctvBatch = Cctv[] & { partial?: boolean }
-export type CctvCacheState = 'fresh' | 'stale'
-export type NearbyCctvResult = {
-  cctvs: NearbyCctv[]
-  cache: { state: CctvCacheState; updatedAt: number }
-}
-
-export interface CctvProvider {
-  readonly id: CctvProviderId
-  fetchCctvs(): Promise<CctvBatch>
-}
+import { CctvServiceError, normalizeCctvIssues, type Cctv, type CctvBatch, type CctvProvider, type CctvSnapshot, type CctvCacheState, type CctvFormat, type ItsRoadType, type NearbyCctvInput, type NearbyCctvResult } from '../server/cctvTypes.js'
+export * from '../server/cctvTypes.js'
+import { UticCctvProvider, normalizeUticCamera } from '../server/utic.js'
+import { CombinedCctvProvider } from '../server/cctvProviders.js'
 
 export interface CctvCache {
   match(request: Request): Promise<Response | undefined>
   put(request: Request, response: Response): Promise<void>
-}
-
-export class CctvServiceError extends Error {
-  readonly type: string
-  readonly status: number
-
-  constructor(message: string, type: string, status: number) {
-    super(message)
-    this.name = 'CctvServiceError'
-    this.type = type
-    this.status = status
-  }
 }
 
 export const CCTV_CACHE_FRESH_MILLISECONDS = 20 * 60 * 60 * 1_000
@@ -617,6 +565,7 @@ export function parseNearbyCctvInput(value: unknown): NearbyCctvInput {
 }
 
 function normalizeCachedCctv(value: unknown): Cctv | undefined {
+  if (isRecord(value) && value.provider === 'UTIC') return normalizeUticCamera(value)
   if (!isRecord(value)) return undefined
   const latitude = finiteNumber(value.latitude)
   const longitude = finiteNumber(value.longitude)
@@ -682,12 +631,14 @@ function normalizeCachedSnapshot(value: unknown): CctvSnapshot | undefined {
     updatedAt,
     ...(partial ? { partial: true } : {}),
     ...(retryAfter === undefined ? {} : { retryAfter }),
+    issues: normalizeCctvIssues(value.issues),
   }
 }
 
 type CloudflareCctvServiceOptions = {
   provider: CctvProvider
   cache: CctvCache
+  cacheKey?: string
   now?: () => number
   freshMilliseconds?: number
   staleMilliseconds?: number
@@ -697,6 +648,7 @@ type CloudflareCctvServiceOptions = {
 export function createCloudflareCctvService({
   provider,
   cache,
+  cacheKey = CCTV_CACHE_KEY,
   now = Date.now,
   freshMilliseconds = CCTV_CACHE_FRESH_MILLISECONDS,
   staleMilliseconds = CCTV_CACHE_STALE_MILLISECONDS,
@@ -706,7 +658,7 @@ export function createCloudflareCctvService({
   let memorySnapshot: CctvSnapshot | undefined
   let lastRefreshFailureAt: number | undefined
   let lastRefreshError: CctvServiceError | undefined
-  const cacheRequest = new Request(CCTV_CACHE_KEY)
+  const cacheRequest = new Request(cacheKey)
 
   const readSnapshot = async () => {
     try {
@@ -765,10 +717,12 @@ export function createCloudflareCctvService({
                     ]
                   : staleSnapshot.cctvs,
                 retryAfter: completedAt + retryMilliseconds,
+                issues: normalizeCctvIssues(cctvs.issues),
               }
             : {
                 cctvs: [...cctvs],
-                updatedAt: completedAt,
+                updatedAt: Math.min(cctvs.updatedAt ?? completedAt, completedAt),
+                issues: normalizeCctvIssues(cctvs.issues),
                 ...(partial
                   ? { partial: true, retryAfter: completedAt + retryMilliseconds }
                   : {}),
@@ -880,6 +834,7 @@ export function createCloudflareCctvService({
       return {
         ...searchCctvs(cached.snapshot.cctvs, input),
         cache: { state: cached.state, updatedAt: cached.snapshot.updatedAt },
+        issues: cached.snapshot.issues ?? [],
       }
     },
     async getNearby(
@@ -890,12 +845,13 @@ export function createCloudflareCctvService({
       return {
         cctvs: findNearbyCctvs(cached.snapshot.cctvs, input),
         cache: { state: cached.state, updatedAt: cached.snapshot.updatedAt },
+        issues: cached.snapshot.issues ?? [],
       }
     },
   }
 }
 
-export type CctvEnv = { ITS_API_KEY?: string }
+export type CctvEnv = { ITS_API_KEY?: string; UTIC_API_KEY?: string; UTIC_RELAY_URL?: string; UTIC_RELAY_TOKEN?: string }
 export type CctvPagesContext = {
   request: Request
   env: CctvEnv
@@ -925,15 +881,25 @@ async function getDefaultCache(): Promise<CctvCache> {
   return cacheStorage.default ?? cacheStorage.open('mira-cctv')
 }
 
-async function getDefaultService(apiKey: string) {
+async function getDefaultService(env: CctvEnv) {
+  const itsKey = getItsApiKey(env)
+  const uticKey = env.UTIC_API_KEY?.trim()
+  const relayUrl = env.UTIC_RELAY_URL?.trim()
+  const relayToken = env.UTIC_RELAY_TOKEN?.trim()
+  const apiKey = JSON.stringify([itsKey, uticKey, relayUrl, relayToken])
   if (defaultService?.apiKey === apiKey) return defaultService.service
   if (defaultServiceInitialization?.apiKey === apiKey) {
     return defaultServiceInitialization.promise
   }
 
-  const promise = getDefaultCache().then((cache) =>
-    createCloudflareCctvService({ provider: new ItsCctvProvider(apiKey), cache }),
-  )
+  const providers: CctvProvider[] = []
+  if (itsKey) providers.push(new ItsCctvProvider(itsKey))
+  if (uticKey || relayUrl) providers.push(new UticCctvProvider({ apiKey: uticKey, relayUrl, relayToken }))
+  const promise = (async () => {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(apiKey))
+    const scope = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+    return createCloudflareCctvService({ provider: new CombinedCctvProvider(providers), cache: await getDefaultCache(), cacheKey: `https://mira.internal/cache/cctv/multi-v2/${scope}` })
+  })()
   defaultServiceInitialization = { apiKey, promise }
   try {
     const service = await promise
@@ -1010,14 +976,14 @@ export async function handleNearbyCctvRequest(context: CctvPagesContext, mode: '
     }
     const nearbyInput = searchInput ? undefined : parseNearbyCctvInput(payload)
     const apiKey = getItsApiKey(env)
-    if (!apiKey) {
+    if (!apiKey && !env.UTIC_API_KEY?.trim() && !env.UTIC_RELAY_URL?.trim()) {
       throw new CctvServiceError(
-        'ITS_API_KEY가 Cloudflare Pages Secret에 설정되지 않았습니다.',
+        'ITS 또는 UTIC CCTV 인증 설정이 필요합니다.',
         'configuration_error',
         503,
       )
     }
-    const service = await getDefaultService(apiKey)
+    const service = await getDefaultService(env)
     const scheduleBackground = context.waitUntil
       ? (promise: Promise<unknown>) => context.waitUntil?.(promise)
       : undefined

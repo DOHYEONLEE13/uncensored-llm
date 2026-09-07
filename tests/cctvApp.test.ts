@@ -82,7 +82,7 @@ async function setup(
     await settle()
   } else {
     await click('채팅 도구 열기')
-    await click('현재 위치에서 가까운 ITS 도로 CCTV 찾기')
+    await click('현재 위치에서 가까운 도로 CCTV 찾기')
   }
   for (let i = 0; i < 10 && !host.querySelector('.cctv-results') && requests.length; i++) await settle()
   return {
@@ -116,7 +116,7 @@ test('named road chat searches only that road without asking for GPS or calling 
   try {
     assert.equal(view.locationReads, 0)
     assert.deepEqual(view.requests, [{ url: '/api/cctv/search', body: { query: '올림픽대로', limit: 20 } }])
-    assert.match(view.host.textContent, /올림픽대로.*일치하는 ITS CCTV 1곳/)
+    assert.match(view.host.textContent, /올림픽대로.*일치하는 CCTV 1곳/)
     assert.equal(view.host.querySelectorAll('.cctv-list-button').length, 1)
     assert.equal(view.host.querySelector('.cctv-map-frame'), null)
     assert.doesNotMatch(dom.localStorage.getItem('mira-conversations') || '', /latitude|longitude|streamUrl|cctvs|cctvSearch/)
@@ -161,5 +161,17 @@ test('closing chat during geolocation discards the late position without sending
     assert.deepEqual(view.requests, [])
     assert.equal(view.host.querySelector('.cctv-results'), null)
     assert.doesNotMatch(dom.localStorage.getItem('mira-conversations') || '', /37\.123456|127\.123456/)
+  } finally { await view.dispose() }
+})
+
+test('UTIC partial failure stays visible beside ITS results and is excluded from saved metadata', async () => {
+  const view = await setup((success) => success({ coords: coordinates } as GeolocationPosition), () => Response.json({
+    cctvs: [{ id: 'ITS:available', provider: 'ITS', name: '이용 가능한 도로', providerId: 'available', ...coordinates, distanceMeters: 0, streamUrl: 'https://example.test/live.mp4', format: 'mp4' }],
+    issues: [{ provider: 'UTIC', code: 'utic_ip_not_allowed', message: 'private-raw-diagnostic' }],
+  }))
+  try {
+    assert.match(view.host.textContent, /UTIC는 서버 IP가 승인 대역과 달라/)
+    assert.equal(view.host.querySelectorAll('.cctv-list-button').length, 1)
+    assert.doesNotMatch(dom.localStorage.getItem('mira-conversations') || '', /private-raw-diagnostic|utic_ip_not_allowed|cctvIssues|coordinates/)
   } finally { await view.dispose() }
 })

@@ -1,5 +1,7 @@
 # MIRA CCTV 지도 연결 상태
 
+2026-09-07: UTIC 추가 및 공급자 통합 이후의 환경변수·IP 승인·재생 제한은 [UTIC 연결 문서](./utic-cctv.md)를 참고한다. 아래 내용은 기존 ITS 지도 구현과 검증 기록이다.
+
 ## 기존 구조
 
 `src/cctv.ts`에서 위치를 한 번 읽고 POST `/api/cctv/nearby`로 전송한다.
